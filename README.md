@@ -8,7 +8,7 @@ The application opens directly into a complete pilot workspace with Birmingham a
 
 The repository includes a GitHub Actions workflow that statically exports the application and deploys it to:
 
-`https://omkar2205.github.io/campus-timetable-intelligence/`
+`https://goreadyconsulting.github.io/campus-timetable-intelligence/`
 
 In **Settings → Pages**, select **GitHub Actions** as the deployment source.
 
@@ -32,9 +32,10 @@ The interface deliberately remains modern and guided rather than copying the leg
 
 The included reference dataset contains:
 
-- 28 rooms
-- 16 lecturers
-- 16 student groups
+- 28 locations
+- 16 staff
+- 16 individual student pilot records
+- 10 campus-specific Programmes of Study
 - 40 modules
 - 40 scheduling requirements
 - 56 scheduled sessions
