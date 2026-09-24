@@ -1,32 +1,43 @@
 {
   "name": "campus-timetable-intelligence",
-  "version": "2.0.0",
+  "version": "5.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "build:backend": "node scripts/build-backend.mjs",
+    "verify": "npm run build:backend && npm run test && npm run typecheck && npm run build",
+    "test:browser": "node --import tsx tests/browser.mjs"
   },
   "dependencies": {
-    "@types/node": "latest",
-    "@types/react": "latest",
-    "@types/react-dom": "latest",
-    "autoprefixer": "latest",
-    "class-variance-authority": "latest",
-    "clsx": "latest",
-    "lucide-react": "latest",
-    "next": "latest",
-    "postcss": "latest",
-    "react": "latest",
-    "react-dom": "latest",
-    "recharts": "latest",
-    "tailwind-merge": "latest",
+    "@types/node": "26.6.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "autoprefixer": "10.6.1",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "lucide-react": "1.47.0",
+    "luxon": "3.7.2",
+    "next": "16.3.6",
+    "postcss": "8.5.28",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "recharts": "3.10.1",
+    "tailwind-merge": "3.7.0",
     "tailwindcss": "3.4.17",
-    "typescript": "latest"
+    "typescript": "6.0.3"
   },
   "devDependencies": {
-    "eslint": "latest",
-    "eslint-config-next": "latest"
+    "@types/luxon": "3.7.5",
+    "esbuild": "0.28.2",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.3.6",
+    "playwright": "1.62.1",
+    "prettier": "3.6.2",
+    "tsx": "4.23.15"
   }
 }

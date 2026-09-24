@@ -1,5 +1,10 @@
 import type { AppData } from "@/types";
-import type { ActivityTemplate, AvailabilityException, PublicationState, SuggestionInput } from "@/types/workflow";
+import type {
+  ActivityTemplate,
+  AvailabilityException,
+  PublicationState,
+  SuggestionInput,
+} from "@/types/workflow";
 
 export type RuntimeConfig = {
   backendEnabled: boolean;
@@ -8,7 +13,7 @@ export type RuntimeConfig = {
   dataMode: "training" | "live" | "shared" | string;
 };
 
-export type SaveResult = "confirmed" | "submitted";
+export type SaveResult = "confirmed";
 
 export type WorkflowPayload = {
   templates: ActivityTemplate[];
@@ -20,7 +25,7 @@ const defaultConfig: RuntimeConfig = {
   backendEnabled: false,
   appsScriptUrl: "",
   geminiEnabled: false,
-  dataMode: "training"
+  dataMode: "training",
 };
 
 const REQUEST_TIMEOUT_MS = 15000;
@@ -29,7 +34,10 @@ export async function getRuntimeConfig(): Promise<RuntimeConfig> {
   if (typeof window === "undefined") return defaultConfig;
   try {
     const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
-    const response = await fetch(`${basePath}/runtime-config.json?ts=${Date.now()}`, { cache: "no-store" });
+    const response = await fetch(
+      `${basePath}/runtime-config.json?ts=${Date.now()}`,
+      { cache: "no-store" },
+    );
     if (!response.ok) return defaultConfig;
     const config = await response.json();
     return { ...defaultConfig, ...config };
@@ -38,123 +46,163 @@ export async function getRuntimeConfig(): Promise<RuntimeConfig> {
   }
 }
 
-export async function checkBackendReachable(config: RuntimeConfig): Promise<boolean> {
-  if (!config.backendEnabled || !config.appsScriptUrl || typeof window === "undefined") return false;
-  const url = buildUrl(config.appsScriptUrl, { action: "health", ts: String(Date.now()) });
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
+export async function readBackend(
+  config: RuntimeConfig,
+  action: string,
+  parameters: Record<string, string> = {},
+) {
+  if (!config.backendEnabled || !config.appsScriptUrl)
+    throw new Error("The shared service is not connected.");
+  const p = await getJsonWithJsonpFallback(
+    buildUrl(config.appsScriptUrl, {
+      action,
+      ...parameters,
+      ts: String(Date.now()),
+    }),
+  );
+  if (!p?.ok)
+    throw new Error(
+      p?.error?.message || p?.error || "Unable to read shared data.",
+    );
+  return p.data;
+}
+export async function loadRemoteData(config: RuntimeConfig): Promise<AppData> {
+  const data = await readBackend(config, "bootstrap");
+  if (
+    data?.schemaVersion !== "5.0.0" ||
+    !Array.isArray(data.series) ||
+    !Number.isInteger(data.dataRevision)
+  )
+    throw new Error(
+      "The shared service needs the current schema before editing is available.",
+    );
+  return data;
+}
+export async function checkBackendReachable(config: RuntimeConfig) {
   try {
-    await fetch(url, {
-      method: "GET",
-      mode: "no-cors",
-      cache: "no-store",
-      redirect: "follow",
-      signal: controller.signal
-    });
-    return true;
+    const d = await readBackend(config, "health");
+    return d.version === "5.0.0";
   } catch {
     return false;
-  } finally {
-    window.clearTimeout(timer);
   }
 }
-
-export async function loadRemoteData(config: RuntimeConfig): Promise<AppData | null> {
-  if (!config.backendEnabled || !config.appsScriptUrl) return null;
-  const url = buildUrl(config.appsScriptUrl, { action: "loadAll", ts: String(Date.now()) });
-  const payload = await getJsonWithJsonpFallback(url);
-  if (!payload?.ok) throw new Error(payload?.error || "Backend load failed");
-  return payload.data as AppData;
-}
-
-export async function loadWorkflowData(config: RuntimeConfig): Promise<WorkflowPayload | null> {
-  if (!config.backendEnabled || !config.appsScriptUrl) return null;
-  const url = buildUrl(config.appsScriptUrl, { action: "loadWorkflow", ts: String(Date.now()) });
-  const payload = await getJsonWithJsonpFallback(url);
-  if (!payload?.ok) throw new Error(payload?.error || "Workflow load failed");
-  return payload.data as WorkflowPayload;
-}
-
-export async function saveRemoteData(config: RuntimeConfig, data: AppData): Promise<SaveResult> {
-  if (!config.backendEnabled || !config.appsScriptUrl) return "submitted";
-  const result = await postWithOpaqueFallback(config.appsScriptUrl, {
-    action: "saveAll",
-    data,
-    user: "Timetable platform"
+const PENDING = "cti-pending-requests-v5";
+export async function requestBackend(
+  config: RuntimeConfig,
+  body: Record<string, unknown>,
+) {
+  if (!config.backendEnabled || !config.appsScriptUrl)
+    throw new Error("The shared service is not connected.");
+  const { expectedDataRevision: _revision, ...identity } = body;
+  const fingerprint = JSON.stringify({
+    url: config.appsScriptUrl,
+    ...identity,
   });
-  return result.opaque ? "submitted" : "confirmed";
-}
-
-export async function saveWorkflowData(config: RuntimeConfig, workflow: WorkflowPayload): Promise<SaveResult> {
-  if (!config.backendEnabled || !config.appsScriptUrl) return "submitted";
-  const result = await postWithOpaqueFallback(config.appsScriptUrl, {
-    action: "saveWorkflow",
-    workflow,
-    user: "Timetable platform"
-  });
-  return result.opaque ? "submitted" : "confirmed";
-}
-
-export async function clearRemoteData(config: RuntimeConfig): Promise<SaveResult> {
-  if (!config.backendEnabled || !config.appsScriptUrl) return "submitted";
-  const result = await postWithOpaqueFallback(config.appsScriptUrl, {
-    action: "clearAll",
-    user: "Timetable platform"
-  });
-  return result.opaque ? "submitted" : "confirmed";
-}
-
-export async function submitSuggestion(config: RuntimeConfig, suggestion: SuggestionInput) {
-  if (!config.backendEnabled || !config.appsScriptUrl) throw new Error("The feedback service is not connected.");
-
-  const submittedAt = new Date().toISOString();
-  const result = await postWithOpaqueFallback(config.appsScriptUrl, {
-    action: "submitSuggestion",
-    suggestion: {
-      ...suggestion,
-      submittedAt,
-      source: "GitHub Pages pilot"
+  let pending: Record<
+    string,
+    { requestId: string; body: Record<string, unknown> }
+  > = JSON.parse(localStorage.getItem(PENDING) || "{}");
+  // Persist the request before sending. An unconfirmed retry uses the same ID, including after refresh.
+  for (const [key, old] of Object.entries(pending)) {
+    if (key === fingerprint) continue;
+    let receipt;
+    try {
+      receipt = await readBackend(config, "requestStatus", {
+        requestId: old.requestId,
+      });
+    } catch {
+      throw new Error(
+        "An earlier save is still unconfirmed. Reconnect before submitting another change.",
+      );
     }
-  });
-
-  if (!result.opaque && result.payload?.data) {
-    return result.payload.data as { suggestionId: string; submittedAt: string };
+    if (!receipt || receipt.pending)
+      throw new Error(
+        "An earlier save is still unconfirmed. Retry the original change before submitting another one.",
+      );
+    delete pending[key];
+    localStorage.setItem(PENDING, JSON.stringify(pending));
+    if (receipt.ok)
+      throw new Error(
+        "An earlier change was saved. Refresh shared data and review it before submitting this different change.",
+      );
   }
-
-  return {
-    suggestionId: createClientReference(),
-    submittedAt
+  const entry = pending[fingerprint] || {
+    requestId: crypto.randomUUID(),
+    body,
   };
+  pending[fingerprint] = entry;
+  localStorage.setItem(PENDING, JSON.stringify(pending));
+  const finish = (result: any) => {
+    if (result?.pending)
+      throw new Error(
+        "Save confirmation is pending. Refresh or retry to check the same request.",
+      );
+    if (result) {
+      pending = JSON.parse(localStorage.getItem(PENDING) || "{}");
+      delete pending[fingerprint];
+      localStorage.setItem(PENDING, JSON.stringify(pending));
+    }
+    if (!result?.ok)
+      throw new Error(
+        result?.error?.message || result?.error || "Save was not confirmed.",
+      );
+    return result;
+  };
+  let prior;
+  try {
+    prior = await readBackend(config, "requestStatus", {
+      requestId: entry.requestId,
+    });
+  } catch {}
+  if (prior) return finish(prior);
+  let result;
+  try {
+    result = await postReadable(config.appsScriptUrl, {
+      ...entry.body,
+      requestId: entry.requestId,
+    });
+  } catch (error) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const receipt = await readBackend(config, "requestStatus", {
+          requestId: entry.requestId,
+        });
+        if (receipt) return finish(receipt);
+      } catch {}
+      await new Promise((r) => setTimeout(r, 800));
+    }
+    throw new Error(
+      "Save confirmation is unavailable. Your request is retained; reconnect and retry to check its result.",
+    );
+  }
+  return finish(result);
 }
-
+export async function submitSuggestion(
+  config: RuntimeConfig,
+  suggestion: SuggestionInput,
+) {
+  return (
+    await requestBackend(config, { action: "submitSuggestion", suggestion })
+  ).data as { suggestionId: string; submittedAt: string };
+}
 export async function askGemini(
   config: RuntimeConfig,
   question: string,
-  data: AppData
-): Promise<string | null> {
-  if (!config.backendEnabled || !config.geminiEnabled || !config.appsScriptUrl) return null;
-
-  const payload = await postReadable(config.appsScriptUrl, {
+  data: AppData,
+) {
+  if (!config.geminiEnabled) return null;
+  const result = await requestBackend(config, {
     action: "askGemini",
     question,
     context: {
-      rooms: data.rooms,
-      lecturers: data.lecturers,
-      students: data.students,
-      programmes: data.programmes,
-      studentGroups: data.studentGroups,
-      modules: data.modules,
+      campuses: data.campuses,
       sessions: data.sessions,
       conflicts: data.conflicts,
-      requirements: data.requirements,
-      generatedAt: data.generatedAt
-    }
+      templates: data.templates,
+    },
   });
-
-  return payload?.answer || null;
+  return result.answer || null;
 }
-
 async function getJsonWithJsonpFallback(url: string) {
   try {
     return await getReadableJson(url);
@@ -172,9 +220,10 @@ async function getReadableJson(url: string) {
       method: "GET",
       cache: "no-store",
       redirect: "follow",
-      signal: controller.signal
+      signal: controller.signal,
     });
-    if (!response.ok) throw new Error(`Backend load failed: ${response.status}`);
+    if (!response.ok)
+      throw new Error(`Backend load failed: ${response.status}`);
     return await response.json();
   } finally {
     clearTimeout(timer);
@@ -190,41 +239,15 @@ async function postReadable(url: string, body: Record<string, unknown>) {
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify(body),
       redirect: "follow",
-      signal: controller.signal
+      signal: controller.signal,
     });
-    if (!response.ok) throw new Error(`Backend request failed: ${response.status}`);
+    if (!response.ok)
+      throw new Error(`Backend request failed: ${response.status}`);
     const payload = await response.json();
-    if (!payload?.ok) throw new Error(payload?.error || "Backend request failed");
+
     return payload;
   } finally {
     clearTimeout(timer);
-  }
-}
-
-async function postWithOpaqueFallback(url: string, body: Record<string, unknown>) {
-  try {
-    const payload = await postReadable(url, body);
-    return { opaque: false as const, payload };
-  } catch (readableError) {
-    if (typeof window === "undefined") throw readableError;
-
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    try {
-      await fetch(url, {
-        method: "POST",
-        mode: "no-cors",
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify(body),
-        redirect: "follow",
-        signal: controller.signal
-      });
-      return { opaque: true as const, payload: null };
-    } catch {
-      throw readableError;
-    } finally {
-      window.clearTimeout(timer);
-    }
   }
 }
 
@@ -234,7 +257,10 @@ function jsonp(url: string): Promise<any> {
     const target = new URL(url);
     target.searchParams.set("callback", callbackName);
     const script = document.createElement("script");
-    const timer = window.setTimeout(() => cleanup(new Error("Backend JSONP request timed out")), REQUEST_TIMEOUT_MS);
+    const timer = window.setTimeout(
+      () => cleanup(new Error("Backend JSONP request timed out")),
+      REQUEST_TIMEOUT_MS,
+    );
 
     function cleanup(error?: Error, payload?: unknown) {
       window.clearTimeout(timer);
@@ -244,7 +270,9 @@ function jsonp(url: string): Promise<any> {
       else resolve(payload);
     }
 
-    (window as unknown as Record<string, unknown>)[callbackName] = (payload: unknown) => cleanup(undefined, payload);
+    (window as unknown as Record<string, unknown>)[callbackName] = (
+      payload: unknown,
+    ) => cleanup(undefined, payload);
     script.onerror = () => cleanup(new Error("Backend JSONP request failed"));
     script.src = target.toString();
     document.head.appendChild(script);
@@ -253,7 +281,9 @@ function jsonp(url: string): Promise<any> {
 
 function buildUrl(baseUrl: string, parameters: Record<string, string>) {
   const url = new URL(baseUrl);
-  Object.entries(parameters).forEach(([key, value]) => url.searchParams.set(key, value));
+  Object.entries(parameters).forEach(([key, value]) =>
+    url.searchParams.set(key, value),
+  );
   return url.toString();
 }
 
@@ -265,7 +295,7 @@ function createClientReference() {
     String(date.getDate()).padStart(2, "0"),
     String(date.getHours()).padStart(2, "0"),
     String(date.getMinutes()).padStart(2, "0"),
-    String(date.getSeconds()).padStart(2, "0")
+    String(date.getSeconds()).padStart(2, "0"),
   ].join("");
   return `SUG-${stamp}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }

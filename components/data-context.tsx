@@ -1,295 +1,230 @@
 "use client";
-
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { initialData } from "@/data/mock";
-import { AppData, Lecturer, Module, Programme, Room, SchedulingRequirement, Session, Student, StudentGroup } from "@/types";
-import { detectConflicts, generateTimetable } from "@/lib/scheduler";
-import { normaliseCampusData } from "@/lib/master-data";
 import {
-  checkBackendReachable,
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { initialData } from "@/data/mock";
+import type {
+  AppData,
+  Session,
+  Lecturer,
+  Room,
+  Student,
+  Programme,
+  Module,
+} from "@/types";
+import type { EntityName, Mutation } from "@/types/scheduling";
+import {
   getRuntimeConfig,
   loadRemoteData,
-  RuntimeConfig,
-  saveRemoteData
+  requestBackend,
+  readBackend,
+  type RuntimeConfig,
 } from "@/lib/backend";
+import { migrateData, resolveOccurrences } from "@/lib/recurrence";
+import { detectOccurrenceConflicts } from "@/lib/constraints";
+import { campusToday, datePlus, monday } from "@/lib/academic";
 
-const STORAGE_KEY = "cti-platform-data-v7";
-const STAGED_STORAGE_KEY = "cti-platform-staged-v7";
-
-const SEEDED_CONFLICT_IDS = new Set(["C001", "C002", "C003", "C004", "C005"]);
-const SEEDED_CONFLICT_MODULES = new Set([
-  "MAN-CRIADV-26-022",
-  "BHM-SOL-26-053",
-  "BHM-EU-26-092",
-  "MAN-CRIADV-26-132",
-  "MAN-EU-26-152"
-]);
-
-type ImportType = "rooms" | "lecturers" | "studentGroups" | "modules" | "requirements";
-export type BackendStatus = "Local" | "Connecting" | "Connected" | "Syncing" | "Unavailable";
-
-type DataContextValue = {
-  data: AppData;
-  stagedData: AppData;
-  backendConfig: RuntimeConfig;
-  backendStatus: BackendStatus;
-  resetData: () => void;
-  importRows: (type: ImportType, rows: Record<string, string>[]) => void;
-  generateSchedule: () => void;
-  updateSession: (id: string, patch: Partial<Session>) => void;
-  resolveConflict: (id?: string) => void;
-  addManualSession: (session: Session) => void;
-  addLecturer: (lecturer: Lecturer) => void;
-  addRoom: (room: Room) => void;
-  addStudent: (student: Student) => void;
-  addProgramme: (programme: Programme) => void;
-  addModule: (module: Module) => void;
-  syncNow: () => Promise<void>;
-};
-
-const emptyData = (): AppData => ({ rooms: [], lecturers: [], studentGroups: [], students: [], programmes: [], modules: [], sessions: [], conflicts: [], requirements: [] });
-const defaultBackendConfig: RuntimeConfig = { backendEnabled: false, appsScriptUrl: "", geminiEnabled: false, dataMode: "training" };
-const DataContext = createContext<DataContextValue | null>(null);
-
-function hasStagedSchedulingData(value: AppData) {
-  return value.rooms.length > 0 && value.lecturers.length > 0 && value.studentGroups.length > 0 && value.modules.length > 0;
-}
-
-function withoutSeededConflicts(value: AppData): AppData {
-  return {
-    ...value,
-    sessions: value.sessions.map(session => {
-      if (SEEDED_CONFLICT_MODULES.has(session.moduleCode) && session.conflict === "Capacity mismatch") {
-        const { conflict: _conflict, ...cleanSession } = session;
-        return cleanSession;
-      }
-      return session;
-    }),
-    conflicts: value.conflicts.filter(conflict => !SEEDED_CONFLICT_IDS.has(conflict.id || ""))
-  };
-}
-
-function prepareData(value: AppData) {
-  return normaliseCampusData(withoutSeededConflicts(value));
-}
-
-export function DataProvider({ children }: { children: React.ReactNode }) {
-  const cleanInitialData = useMemo(() => prepareData(structuredClone(initialData)), []);
-  const [data, setData] = useState<AppData>(cleanInitialData);
-  const [stagedData, setStagedData] = useState<AppData>(emptyData());
-  const [loaded, setLoaded] = useState(false);
-  const [backendConfig, setBackendConfig] = useState<RuntimeConfig>(defaultBackendConfig);
-  const [backendStatus, setBackendStatus] = useState<BackendStatus>("Local");
-
+export type BackendStatus =
+  | "Local"
+  | "Connecting"
+  | "Connected"
+  | "Syncing"
+  | "Unavailable";
+const CACHE = "cti-confirmed-cache-v5";
+function useDataValue() {
+  const [rawData, setData] = useState<AppData>(() =>
+    migrateData(structuredClone(initialData)),
+  );
+  const [backendConfig, setConfig] = useState<RuntimeConfig>({
+    backendEnabled: false,
+    appsScriptUrl: "",
+    geminiEnabled: false,
+    dataMode: "shared",
+  });
+  const [backendStatus, setStatus] = useState<BackendStatus>("Connecting");
+  const [error, setError] = useState("");
+  const busy = useRef(false);
+  const [campus, setCampus] = useState("All campuses"),
+    [academicYearId, setAcademicYearId] = useState("AY-2026"),
+    [weekStart, setWeekStart] = useState(monday(campusToday()));
+  const [notice, setNotice] = useState("");
+  async function refresh(config = backendConfig) {
+    setStatus("Connecting");
+    try {
+      const next = await loadRemoteData(config);
+      setData(next);
+      localStorage.setItem(CACHE, JSON.stringify(next));
+      setStatus("Connected");
+      setError("");
+      return next;
+    } catch (e) {
+      setStatus("Unavailable");
+      setError((e as Error).message);
+      throw e;
+    }
+  }
   useEffect(() => {
     let active = true;
-
-    async function initialise() {
-      let localData = cleanInitialData;
-      let localStaged = emptyData();
-
-      try {
-        const saved = localStorage.getItem(STORAGE_KEY);
-        const staged = localStorage.getItem(STAGED_STORAGE_KEY);
-        if (saved) localData = prepareData(JSON.parse(saved));
-        if (staged) localStaged = normaliseCampusData(JSON.parse(staged));
-      } catch {}
-
-      if (!active) return;
-      setData(localData);
-      setStagedData(localStaged);
-
-      const config = await getRuntimeConfig();
-      if (!active) return;
-      setBackendConfig(config);
-
-      if (config.backendEnabled && config.appsScriptUrl) {
-        setBackendStatus("Connecting");
-        try {
-          const remoteData = await loadRemoteData(config);
-          if (active && remoteData && remoteData.rooms.length) {
-            const cleanedRemote = prepareData(remoteData);
-            setData(cleanedRemote);
-            const removedSeededContent = cleanedRemote.conflicts.length !== remoteData.conflicts.length
-              || cleanedRemote.sessions.some((session, index) => session.conflict !== remoteData.sessions[index]?.conflict);
-            if (removedSeededContent) {
-              void saveRemoteData(config, cleanedRemote).catch(error => console.warn("Seeded conflict cleanup could not be confirmed.", error));
-            }
-          }
-          if (active) setBackendStatus("Connected");
-        } catch (error) {
-          console.warn("Shared data could not be read directly; checking backend reachability.", error);
-          const reachable = await checkBackendReachable(config);
-          if (active) setBackendStatus(reachable ? "Connected" : "Unavailable");
-        }
-      } else {
-        setBackendStatus("Local");
+    try {
+      const cached = localStorage.getItem(CACHE);
+      if (cached) {
+        const value = JSON.parse(cached);
+        if (value.schemaVersion === "5.0.0") setData(value);
       }
-
-      if (active) setLoaded(true);
-    }
-
-    void initialise();
-    return () => { active = false; };
-  }, [cleanInitialData]);
-
-  useEffect(() => {
-    if (loaded) localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  }, [data, loaded]);
-
-  useEffect(() => {
-    if (loaded) localStorage.setItem(STAGED_STORAGE_KEY, JSON.stringify(stagedData));
-  }, [stagedData, loaded]);
-
-  const persistLiveData = useCallback((next: AppData) => {
-    if (!backendConfig.backendEnabled || !backendConfig.appsScriptUrl) return;
-    setBackendStatus("Syncing");
-    void saveRemoteData(backendConfig, next)
-      .then(() => setBackendStatus("Connected"))
-      .catch((error) => {
-        console.warn("Shared save was unavailable; the browser copy remains available.", error);
-        setBackendStatus("Unavailable");
-      });
-  }, [backendConfig]);
-
-  const updateData = useCallback((builder: (current: AppData) => AppData) => {
-    setData(current => {
-      const next = prepareData(builder(current));
-      persistLiveData(next);
-      return next;
+    } catch {}
+    void getRuntimeConfig().then(async (config) => {
+      if (!active) return;
+      setConfig(config);
+      try {
+        await refresh(config);
+      } catch {}
     });
-  }, [persistLiveData]);
-
-  const value = useMemo<DataContextValue>(() => ({
-    data,
-    stagedData,
+    const params = new URLSearchParams(location.search);
+    if (params.get("campus")) setCampus(params.get("campus")!);
+    if (params.get("year")) setAcademicYearId(params.get("year")!);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(params.get("week") || ""))
+      setWeekStart(monday(params.get("week")!));
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
+    const url = new URL(location.href);
+    url.searchParams.set("campus", campus);
+    url.searchParams.set("year", academicYearId);
+    url.searchParams.set("week", weekStart);
+    history.replaceState(null, "", url);
+  }, [campus, academicYearId, weekStart]);
+  const derived = useMemo(() => {
+    try {
+      const all = resolveOccurrences(
+        rawData,
+        datePlus(weekStart, -1),
+        datePlus(weekStart, 7),
+      );
+      const sessions = all.filter(
+        (s) =>
+          s.date! >= weekStart &&
+          s.date! <= datePlus(weekStart, 6) &&
+          s.academicYearId === academicYearId &&
+          (campus === "All campuses" || s.campus === campus),
+      );
+      const ids = new Set(sessions.map((s) => s.id));
+      return {
+        data: {
+          ...rawData,
+          sessions,
+          conflicts: detectOccurrenceConflicts(rawData, all).filter((c) =>
+            c.occurrenceIds?.some((id) => ids.has(id)),
+          ),
+        },
+        resolutionError: "",
+      };
+    } catch (e) {
+      return {
+        data: { ...rawData, sessions: [], conflicts: [] },
+        resolutionError: (e as Error).message,
+      };
+    }
+  }, [rawData, weekStart, campus, academicYearId]);
+  async function run(body: Record<string, unknown>) {
+    if (busy.current) throw new Error("A save is already in progress.");
+    if (backendStatus !== "Connected")
+      throw new Error("Reconnect to shared data before saving.");
+    busy.current = true;
+    setStatus("Syncing");
+    try {
+      const result = await requestBackend(backendConfig, body);
+      try {
+        await refresh();
+        setNotice("Saved to shared data.");
+      } catch {
+        setNotice(
+          "Your change was saved. Reconnect to display the latest data.",
+        );
+      }
+      return result;
+    } catch (e) {
+      setError((e as Error).message);
+      setStatus("Unavailable");
+      throw e;
+    } finally {
+      busy.current = false;
+    }
+  }
+  const mutate = (mutations: Mutation[]) =>
+    run({
+      action: "mutate",
+      expectedDataRevision: rawData.dataRevision,
+      mutations,
+    });
+  const save = (entity: EntityName, record: any, reason = "") => {
+    const existing = ((rawData[entity] || []) as any[]).find(
+      (r) => r.id === record.id,
+    );
+    return mutate([
+      {
+        entity,
+        operation: existing ? "update" : "create",
+        id: existing?.id,
+        expectedRevision: record.revision ?? existing?.revision,
+        record,
+        reason,
+      },
+    ]);
+  };
+  const archive = (entity: EntityName, id: string) => {
+    const r = ((rawData[entity] || []) as any[]).find((r) => r.id === id);
+    return mutate([
+      {
+        entity,
+        id,
+        operation:
+          entity === "variants" || entity === "exceptions"
+            ? "delete"
+            : "archive",
+        expectedRevision: r?.revision,
+        reason: "Archived from application",
+      },
+    ]);
+  };
+  return {
+    rawData,
+    data: derived.data,
+    resolutionError: derived.resolutionError,
     backendConfig,
     backendStatus,
-    resetData: () => {
-      const restored = prepareData(structuredClone(initialData));
-      setData(restored);
-      setStagedData(emptyData());
-      try {
-        localStorage.removeItem(STORAGE_KEY);
-        localStorage.removeItem(STAGED_STORAGE_KEY);
-      } catch {}
-      persistLiveData(restored);
-    },
-    importRows: (type, rows) => setStagedData(current => normaliseCampusData({ ...current, ...mapImport(type, rows), sessions: [], conflicts: [], generatedAt: undefined })),
-    generateSchedule: () => {
-      const source = hasStagedSchedulingData(stagedData)
-        ? stagedData
-        : { ...data, sessions: [], conflicts: [], generatedAt: undefined };
-      const next = prepareData(generateTimetable(normaliseCampusData(source)));
-      setData(next);
-      persistLiveData(next);
-    },
-    updateSession: (id, patch) => updateData(current => {
-      const sessions = current.sessions.map(session => session.id === id ? { ...session, ...patch } : session);
-      return { ...current, sessions, conflicts: detectConflicts({ ...current, sessions }) };
-    }),
-    resolveConflict: (id) => updateData(current => ({
-      ...current,
-      conflicts: current.conflicts.map(conflict => conflict.id === id ? { ...conflict, resolved: true, severity: "Low" } : conflict)
-    })),
-    addManualSession: (session) => updateData(current => {
-      const sessions = [...current.sessions, session];
-      return { ...current, sessions, conflicts: detectConflicts({ ...current, sessions }) };
-    }),
-    addLecturer: lecturer => updateData(current => ({ ...current, lecturers: [...current.lecturers, lecturer] })),
-    addRoom: room => updateData(current => ({ ...current, rooms: [...current.rooms, room] })),
-    addStudent: student => updateData(current => ({ ...current, students: [...(current.students || []), student] })),
-    addProgramme: programme => updateData(current => ({ ...current, programmes: [...(current.programmes || []), programme] })),
-    addModule: module => updateData(current => ({ ...current, modules: [...current.modules, module] })),
-    syncNow: async () => {
-      if (!backendConfig.backendEnabled || !backendConfig.appsScriptUrl) return;
-      setBackendStatus("Syncing");
-      try {
-        await saveRemoteData(backendConfig, data);
-        setBackendStatus("Connected");
-      } catch (error) {
-        setBackendStatus("Unavailable");
-        throw error;
-      }
-    }
-  }), [data, stagedData, backendConfig, backendStatus, persistLiveData, updateData]);
-
-  return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
+    error,
+    notice,
+    setNotice,
+    canWrite: backendStatus === "Connected",
+    campus,
+    setCampus,
+    academicYearId,
+    setAcademicYearId,
+    weekStart,
+    setWeekStart,
+    refresh,
+    syncNow: () => refresh(),
+    mutate,
+    save,
+    archive,
+    run,
+    read: (action: string, p: Record<string, string> = {}) =>
+      readBackend(backendConfig, action, p),
+  };
 }
-
+const Context = createContext<ReturnType<typeof useDataValue> | null>(null);
+export function DataProvider({ children }: { children: React.ReactNode }) {
+  return <Context.Provider value={useDataValue()}>{children}</Context.Provider>;
+}
 export function useCampusData() {
-  const context = useContext(DataContext);
-  if (!context) throw new Error("useCampusData must be used inside DataProvider");
-  return context;
-}
-
-function mapImport(type: ImportType, rows: Record<string, string>[]): Partial<AppData> {
-  if (type === "rooms") {
-    const rooms: Room[] = rows.map((row, index) => ({
-      id: row.room_id || `R${index + 1}`,
-      room: row.room_name || row.room || "Unnamed Room",
-      campus: row.campus || "Birmingham",
-      building: row.building || "Main Building",
-      type: row.room_type || row.type || "Lecture Hall",
-      capacity: Number(row.capacity || 0),
-      status: row.status || "Available"
-    }));
-    return { rooms };
-  }
-
-  if (type === "lecturers") {
-    const lecturers: Lecturer[] = rows.map((row, index) => ({
-      id: row.lecturer_id || `L${index + 1}`,
-      name: row.lecturer_name || row.name || "Unnamed Lecturer",
-      department: row.department || "Academic",
-      maxWeeklyHours: Number(row.max_weekly_hours || 18),
-      weeklyHours: 0,
-      availability: row.availability || "Mon-Fri 09:00-17:00",
-      preferredCampus: row.preferred_campus || row.primary_campus || "Birmingham",
-      primaryCampus: row.primary_campus || row.preferred_campus || "Birmingham",
-      additionalCampuses: String(row.additional_campuses || "").split(/[|,]/).map(item => item.trim()).filter(Boolean),
-      workload: "Normal",
-      modules: []
-    }));
-    return { lecturers };
-  }
-
-  if (type === "studentGroups") {
-    const studentGroups: StudentGroup[] = rows.map((row, index) => ({
-      id: row.group_id || `G${index + 1}`,
-      name: row.group_name || row.name || "Unnamed Group",
-      course: row.course || "General",
-      studentCount: Number(row.student_count || row.students || 0),
-      campus: row.campus || "Birmingham"
-    }));
-    return { studentGroups };
-  }
-
-  if (type === "modules") {
-    const modules: Module[] = rows.map((row, index) => ({
-      id: row.module_id || `M${index + 1}`,
-      code: row.module_code || row.code || "MOD000",
-      name: row.module_name || row.name || "Unnamed Module",
-      course: row.course || "General",
-      campus: row.campus || undefined,
-      programmeId: row.programme_id || undefined,
-      lecturerId: row.lecturer_id || undefined,
-      lecturerName: row.lecturer_name || undefined,
-      weeklySessions: Number(row.weekly_sessions || 1),
-      hoursPerSession: Number(row.hours_per_session || 2),
-      roomTypeRequired: row.room_type_required || "Lecture Hall",
-      studentGroup: row.student_group || undefined
-    }));
-    return { modules };
-  }
-
-  const requirements: SchedulingRequirement[] = rows.map(row => ({
-    moduleCode: row.module_code || row.moduleCode || "",
-    studentGroup: row.student_group || row.studentGroup || "",
-    preferredDays: row.preferred_days || "",
-    preferredTime: row.preferred_time || "",
-    requiredRoomType: row.required_room_type || "Lecture Hall",
-    avoidDays: row.avoid_days || ""
-  }));
-  return { requirements };
+  const value = useContext(Context);
+  if (!value) throw new Error("Missing DataProvider");
+  return value;
 }

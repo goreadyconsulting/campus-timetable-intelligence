@@ -1,108 +1,65 @@
 # Campus Timetable Intelligence
 
-University timetable planning and scheduling platform built with Next.js, React, TypeScript, Tailwind CSS and Recharts.
+Campus-aware teaching planning with dated recurrence, scoped changes, shared Google Sheets persistence and immutable timetable publications.
 
-The application opens directly into a complete pilot workspace with Birmingham and Manchester reference data. It is designed to look and behave like an operational product while remaining intentionally limited to a small number of test users and a modest dataset.
+Application: https://goreadyconsulting.github.io/campus-timetable-intelligence/
 
-## GitHub Pages
+## Working locally
 
-The repository includes a GitHub Actions workflow that statically exports the application and deploys it to:
+Use Node.js 24.
 
-`https://goreadyconsulting.github.io/campus-timetable-intelligence/`
-
-In **Settings → Pages**, select **GitHub Actions** as the deployment source.
-
-## Guide-aligned workflow
-
-The platform follows this process:
-
-1. Maintain source data for campuses, rooms, lecturers, student groups, modules and scheduling requirements.
-2. Review Activity Templates containing teaching weeks, duration, planned size, tutor suitability and room suitability.
-3. Record normal availability and date-specific exceptions.
-4. Validate the teaching requirements before scheduling.
-5. Generate, move and manually add timetable sessions.
-6. Recalculate room, lecturer, student-group and capacity conflicts.
-7. Review publication readiness and record a publication snapshot.
-8. Export operational reports.
-9. Submit pilot feedback into the shared Google Sheet.
-
-The interface deliberately remains modern and guided rather than copying the legacy Scientia Enterprise and Classic screens.
-
-## Reference data
-
-The included reference dataset contains:
-
-- 28 locations
-- 16 staff
-- 16 individual student pilot records
-- 10 campus-specific Programmes of Study
-- 40 modules
-- 40 scheduling requirements
-- 56 scheduled sessions
-- Birmingham and Manchester campuses
-- PGDL, BPC, SQE1, LLB and LLM programmes
-
-Artificial conflict records have been removed. Conflicts are created only when current timetable data produces a genuine clash or capacity issue.
-
-## Main areas
-
-- Dashboard
-- Activity Planning and pre-scheduling validation
-- Availability and date-specific exceptions
-- Data Import and staging
-- Multi-week Timetable
-- Room Booking
-- Lecturer and Student Schedule views
-- Conflict Alerts
-- Review & Publication
-- Analytics
-- Reports
-- Suggestions
-- AI Help Assistant
-
-## Shared backend
-
-The frontend is connected to Google Apps Script and Google Sheets through `public/runtime-config.json`.
-
-The prepared spreadsheet contains:
-
-- Summary
-- Config
-- Rooms
-- Lecturers
-- StudentGroups
-- Modules
-- Requirements
-- Sessions
-- Conflicts
-- ActivityTemplates
-- AvailabilityExceptions
-- PublicationLog
-- Suggestions
-- AuditLog
-- FAQs
-
-The Apps Script files are in `apps-script/`. Follow `apps-script/SETUP.md` whenever the backend code is updated.
-
-Gemini keys must only be stored in Apps Script **Script Properties** and must never be committed to GitHub.
-
-## Pilot limitation
-
-This is a final working model for evaluation, not a scaled production service. It has no user authentication, role-based permissions, institutional calendar delivery, high-volume optimisation or multi-tenant data separation. Use approved dummy or training data and avoid sensitive live information.
-
-## Local development
-
-```powershell
-npm.cmd install
-npm.cmd run dev -- --webpack
+```sh
+npm ci
+npm run dev
 ```
 
-Open `http://localhost:3000`.
+The frontend uses `public/runtime-config.json`. Editing requires a confirmed version 5 backend response. A disconnected or older backend leaves the last available data readable and disables editing. Browser storage is a cache and a pending-request register, not a shared source of truth.
 
-## Production build
+## Scheduling
 
-```powershell
-npm.cmd run build
+- Academic years, terms and teaching weeks define actual occurrence dates. Non-teaching and archived weeks are excluded.
+- Series store campus-local day/time, the campus IANA zone, resource IDs and individual student IDs.
+- Variants support one occurrence, selected teaching weeks, a date range, this-and-following, cancellation and extra teaching.
+- Precedence is single occurrence, week set, date range, following occurrences, then the base series. Same-priority overlapping overrides are rejected.
+- A scoped-change preview shows affected weeks and new conflicts. Draft manual edits can retain conflicts; hard constraints block publication.
+- Reverting a variant reveals the next applicable override or base. It does not rewrite history.
+- Conflict checks compare UTC instants and cover rooms, staff, individual students, campus permissions, room suitability/capacity, availability, teaching hours and weekly staff workload. Directional travel allowances produce warnings.
+- Ambiguous or nonexistent local times during daylight-saving transitions are rejected rather than guessed.
+
+The initial 2026/27 calendar is a configurable starter calendar. Confirm institutional term dates, reading weeks, holidays and exams in Academic Calendar before publication. Legacy repeating sessions are migrated to that calendar; original source sheets remain available for reconciliation.
+
+## Shared writes
+
+`apps-script/Code.gs` implements the service and spreadsheet adapter. `apps-script/Domain.gs` is generated from the same TypeScript domain used by the frontend.
+
+Writes use per-record revisions, a global data revision, server-generated IDs, a script lock and stable request IDs. A prepared journal is written before changing records. Interrupted prepared requests roll forward under the lock; completed receipts deduplicate retries. The client retains unconfirmed request IDs through reloads, polls receipts and never treats an opaque response as a successful save.
+
+Public whole-dataset save/reset routes are removed. Master records are archived with dependency checks. Audit entries include before/after values and request IDs. Empty shared arrays remain empty.
+
+Publication follows Draft → In Review → Approved → Published. Review changes advance the shared revision. Data edits invalidate approval. Publication validates its selected year, date range and campuses, checks all overlapping resources including other campuses, and stores a chunked immutable snapshot. Exports from publication history use the saved snapshot.
+
+## Deployment
+
+A push to `main` runs regression tests, checks the generated backend bundle, builds the static export and deploys GitHub Pages. Dependencies are pinned in `package-lock.json`.
+
+**Apps Script deployment is separate from GitHub Pages.** Follow [the backend deployment instructions](docs/backend-deployment.md) to install both script files, migrate the existing workbook and redeploy the web app. A frontend push alone does not update Apps Script.
+
+## Validation
+
+```sh
+npm run build:backend
+npm test
+npm run typecheck
+GITHUB_PAGES=true npm run build
 ```
 
-The static export is written to `out` and includes the GitHub Pages `index.html`.
+Tests cover scoped changes, precedence, cancellation/revert, timezone conversion, real clashes, availability, capacity, reference checks, imports, scheduling, stale writers, receipts, migration, interrupted-write recovery and immutable publications.
+
+The browser harness is `tests/browser.mjs`. It serves the built export through Playwright routing, uses an isolated in-memory backend and performs no live writes. It checks desktop/mobile flows, scoped edits/reverts, master creation, failed-form retention, navigation and disconnected controls. Install Playwright and its Chromium browser before running:
+
+```sh
+npx playwright install chromium
+npm run test:browser
+```
+
+`CHROMIUM_EXECUTABLE_PATH` and `PLAYWRIGHT_MODULE` can select an existing test runtime. Browser screenshots are temporary verification output, not application assets.

@@ -1,96 +1,278 @@
 "use client";
-
-import { useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, ClipboardCheck, Edit3, Plus, RefreshCcw, Search, X } from "lucide-react";
+import { useState } from "react";
 import { AppShell } from "@/components/app-shell";
-import { useWorkflow } from "@/components/workflow-context";
 import { useCampusData } from "@/components/data-context";
-import { campusesFromData, staffCanTeachAtCampus } from "@/lib/master-data";
-import { formatWeekPattern, parseWeekPattern, templateStatus, validateTemplate } from "@/lib/workflow";
-import type { ActivityTemplate } from "@/types/workflow";
-
-export default function PlanningPage() {
-  const { data } = useCampusData();
-  const { templates, addTemplate, updateTemplate, refreshTemplates } = useWorkflow();
-  const campuses = campusesFromData(data);
-  const [campus, setCampus] = useState(campuses[0] || "Birmingham");
-  const [query, setQuery] = useState("");
-  const [status, setStatus] = useState("All");
-  const [selected, setSelected] = useState<ActivityTemplate | null>(null);
-  const [weekPattern, setWeekPattern] = useState("");
-  const [createOpen, setCreateOpen] = useState(false);
-
-  const campusTemplates = templates.filter(template => template.campus === campus);
-  const ready = campusTemplates.filter(template => template.status === "Ready").length;
-  const blocked = campusTemplates.filter(template => template.status === "Blocked").length;
-  const draft = campusTemplates.filter(template => template.status === "Draft").length;
-  const filtered = useMemo(() => campusTemplates.filter(template => {
-    if (status !== "All" && template.status !== status) return false;
-    const text = [template.name, template.moduleCode, template.programme, template.campus, template.studentGroup, template.activityType].join(" ").toLowerCase();
-    return text.includes(query.toLowerCase());
-  }), [campusTemplates, query, status]);
-
-  function openTemplate(template: ActivityTemplate) {
-    setSelected(template);
-    setWeekPattern(formatWeekPattern(template.teachingWeeks));
-  }
-
-  function saveTemplate() {
-    if (!selected) return;
-    updateTemplate(selected.id, { ...selected, teachingWeeks: parseWeekPattern(weekPattern), plannedSize: (selected.studentIds || []).length || selected.plannedSize });
-    setSelected(null);
-  }
-
-  return <AppShell title="Activity Planning" subtitle="Create and validate campus-specific teaching requirements before timetable generation">
-    <div className="enterprise-card p-4">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"><div className="flex items-center gap-2"><select className="input w-56" value={campus} onChange={event => setCampus(event.target.value)}>{campuses.map(item => <option key={item}>{item}</option>)}</select><span className="text-sm text-slate-500">Activity Templates are maintained separately by campus.</span></div><button className="btn-primary" onClick={() => setCreateOpen(true)}><Plus size={16}/>Create Activity Template</button></div>
-    </div>
-
-    <div className="mt-5 grid gap-4 md:grid-cols-4">
-      <Metric label="Activity templates" value={campusTemplates.length} detail={`Maintained under ${campus}`}/>
-      <Metric label="Ready to schedule" value={ready} detail="All required checks passed" tone="good"/>
-      <Metric label="Blocked" value={blocked} detail="Missing or invalid information" tone={blocked ? "bad" : "good"}/>
-      <Metric label="Draft" value={draft} detail="Still being prepared"/>
-    </div>
-
-    <div className="mt-6 enterprise-card p-5">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between"><div><h3 className="font-bold text-navy">Pre-scheduling validation</h3><p className="mt-1 text-sm text-slate-500">Templates are checked for campus, Programme of Study, module, individual students, duration, teaching weeks, staff suitability and location suitability.</p></div><button onClick={refreshTemplates} className="btn-secondary"><RefreshCcw size={16}/>Refresh from source data</button></div>
-      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4"><Checklist label="Campus records linked" passed={campusTemplates.every(template => Boolean(template.campus && template.programme && template.moduleCode))}/><Checklist label="Individual students allocated" passed={campusTemplates.every(template => Boolean((template.studentIds || []).length || template.studentGroup))}/><Checklist label="Tutor suitability entered" passed={campusTemplates.every(template => Boolean(template.lecturerSuitability))}/><Checklist label="Location suitability entered" passed={campusTemplates.every(template => Boolean(template.roomSuitability))}/></div>
-    </div>
-
-    <div className="mt-6 enterprise-card overflow-hidden">
-      <div className="flex flex-col gap-3 border-b border-slate-200 p-4 lg:flex-row lg:items-center lg:justify-between"><div className="relative lg:w-96"><Search className="absolute left-3 top-2.5 text-slate-400" size={17}/><input className="input w-full pl-9" placeholder="Search templates or modules" value={query} onChange={event => setQuery(event.target.value)}/></div><select className="input" value={status} onChange={event => setStatus(event.target.value)}><option>All</option><option>Ready</option><option>Blocked</option><option>Draft</option></select></div>
-      <div className="overflow-auto"><table className="w-full min-w-[1240px] text-left text-sm"><thead><tr className="border-b bg-slate-50 text-xs uppercase text-slate-500"><th className="p-4">Template</th><th>Programme</th><th>Activity</th><th>Students</th><th>Size</th><th>Duration</th><th>Teaching weeks</th><th>Suitabilities</th><th>Status</th><th></th></tr></thead><tbody>{filtered.map(template => <tr key={template.id} className="border-b align-top last:border-0 hover:bg-slate-50"><td className="p-4"><p className="font-semibold text-navy">{template.moduleCode}</p><p className="mt-1 max-w-xs text-xs text-slate-500">{template.name}</p></td><td>{template.programme}<p className="text-xs text-slate-500">{template.campus}</p></td><td>{template.activityType}<p className="text-xs text-slate-500">{template.weeklySessions} per week</p></td><td>{(template.studentIds || []).length ? `${(template.studentIds || []).length} individual students` : template.studentGroup || "None"}</td><td>{template.plannedSize}</td><td>{template.durationHours} hrs</td><td>{formatWeekPattern(template.teachingWeeks)}</td><td><p className="text-xs text-slate-600">{template.lecturerSuitability || "Not set"}</p><p className="mt-1 text-xs text-slate-500">{template.roomSuitability || "Not set"}</p></td><td><Status value={template.status}/></td><td><button onClick={() => openTemplate(template)} className="btn-secondary"><Edit3 size={15}/>Edit</button></td></tr>)}</tbody></table></div>
-      {!filtered.length && <p className="p-10 text-center text-sm text-slate-500">No activity templates match the current campus and filters.</p>}
-    </div>
-
-    {selected && <TemplateEditor template={selected} weekPattern={weekPattern} setWeekPattern={setWeekPattern} data={data} onChange={setSelected} onClose={() => setSelected(null)} onSave={saveTemplate}/>} 
-    {createOpen && <CreateTemplate campus={campus} data={data} onClose={() => setCreateOpen(false)} onCreate={template => { addTemplate(template); setCreateOpen(false); }}/>} 
-  </AppShell>;
+import { RecordEditor } from "@/components/record-editor";
+import { Modal, FormError } from "@/components/modal";
+import { planSchedule } from "@/lib/planner";
+import { assertRecord } from "@/lib/validation";
+export default function Planning() {
+  const c = useCampusData();
+  const [manage, setManage] = useState(false),
+    [seriesEdit, setSeriesEdit] = useState<any>(null);
+  const [edit, setEdit] = useState<any>(null),
+    [plan, setPlan] = useState<ReturnType<typeof planSchedule> | null>(null),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false);
+  const rows = (c.rawData.templates || []).filter(
+    (t) =>
+      !t.archived &&
+      t.academicYearId === c.academicYearId &&
+      (c.campus === "All campuses" || t.campus === c.campus),
+  );
+  return (
+    <AppShell
+      title="Activity Planning"
+      subtitle="Define teaching requirements, then preview suitable allocations"
+    >
+      <div className="mb-5 flex flex-wrap gap-3">
+        <button className="btn-secondary" onClick={() => setManage(true)}>
+          Manage recurring teaching
+        </button>
+        <button
+          className="btn-primary"
+          disabled={!c.canWrite}
+          onClick={() => setEdit({})}
+        >
+          Add activity
+        </button>
+        <button
+          className="btn-secondary"
+          disabled={busy || !c.canWrite}
+          onClick={async () => {
+            setBusy(true);
+            setError("");
+            await new Promise((r) => setTimeout(r, 30));
+            try {
+              setPlan(planSchedule({ ...c.rawData, templates: rows }));
+            } catch (e) {
+              setError((e as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? "Checking allocations…" : "Preview scheduling"}
+        </button>
+      </div>
+      <FormError message={error} />
+      <div className="grid gap-4 xl:grid-cols-2">
+        {rows.map((t) => {
+          let problem = "";
+          try {
+            assertRecord(c.rawData, "templates", t);
+          } catch (e) {
+            problem = (e as Error).message;
+          }
+          const series =
+            c.rawData.series?.filter(
+              (s) =>
+                !s.archived &&
+                s.status !== "Cancelled" &&
+                s.activityTemplateId === t.id,
+            ) || [];
+          const placed = t.teachingWeeks.reduce(
+              (n, w) =>
+                n +
+                Math.min(
+                  t.weeklySessions,
+                  series.filter((s) => s.teachingWeeks.includes(w)).length,
+                ),
+              0,
+            ),
+            required = t.teachingWeeks.length * t.weeklySessions;
+          return (
+            <div className="enterprise-card p-5" key={t.id}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="font-bold">{t.name}</h2>
+                  <p className="text-sm text-slate-500">
+                    {t.moduleCode} · {t.campus}
+                  </p>
+                </div>
+                <span
+                  className={`badge ${problem ? "bg-red-50 text-red-800" : placed === required ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800"}`}
+                >
+                  {problem
+                    ? "Needs attention"
+                    : placed === required
+                      ? "Scheduled"
+                      : placed
+                        ? "Partially scheduled"
+                        : "Ready"}
+                </span>
+              </div>
+              <p className="mt-4 text-sm">
+                {t.durationHours} hours × {t.weeklySessions} sessions per week ·{" "}
+                {t.studentIds?.length || 0} students · {t.roomSuitability}
+              </p>
+              <p className="mt-2 text-sm text-slate-500">
+                Weeks {t.teachingWeeks.join(", ")}
+              </p>
+              <p className="mt-2 text-sm font-semibold">
+                {placed} / {required} teaching occurrences allocated
+              </p>
+              {problem && (
+                <p className="mt-2 text-sm text-red-700">{problem}</p>
+              )}
+              <div className="mt-4 flex gap-2">
+                <button
+                  className="btn-secondary"
+                  disabled={!c.canWrite}
+                  onClick={() => setEdit(t)}
+                >
+                  Edit activity
+                </button>
+                <button
+                  className="btn-secondary"
+                  disabled={!c.canWrite}
+                  onClick={async () => {
+                    try {
+                      await c.archive("templates", t.id);
+                    } catch (e) {
+                      setError((e as Error).message);
+                    }
+                  }}
+                >
+                  Archive
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {!rows.length && (
+        <p className="enterprise-card p-10 text-center">
+          No activities in this scope.
+        </p>
+      )}
+      {edit && (
+        <RecordEditor
+          entity="templates"
+          record={edit}
+          onClose={() => setEdit(null)}
+        />
+      )}
+      {plan && (
+        <Modal
+          title="Scheduling preview"
+          busy={busy}
+          onClose={() => setPlan(null)}
+        >
+          <p>
+            {plan.mutations.length} new recurring series can be placed. Existing
+            teaching remains in place.
+          </p>
+          <div className="my-4 max-h-80 overflow-auto">
+            {plan.mutations.map((m, i) => (
+              <p className="border-b py-2 text-sm" key={i}>
+                {
+                  c.rawData.modules.find((x) => x.id === m.record?.moduleId)
+                    ?.name
+                }{" "}
+                · {String(m.record?.startLocalTime)}-
+                {String(m.record?.endLocalTime)} ·{" "}
+                {
+                  c.rawData.rooms.find((x) => x.id === m.record?.locationId)
+                    ?.room
+                }
+              </p>
+            ))}
+          </div>
+          {plan.unscheduled.length > 0 && (
+            <div className="rounded-xl bg-amber-50 p-4">
+              <h3 className="font-bold">Unscheduled teaching</h3>
+              {plan.unscheduled.map((s, i) => (
+                <p className="mt-1 text-sm" key={i}>
+                  {s}
+                </p>
+              ))}
+            </div>
+          )}
+          <FormError message={error} />
+          <button
+            className="btn-primary mt-4"
+            disabled={busy || !plan.mutations.length || !c.canWrite}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await c.mutate(plan.mutations);
+                setPlan(null);
+              } catch (e) {
+                setError((e as Error).message);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Save {plan.mutations.length} allocations
+          </button>
+        </Modal>
+      )}
+      {manage && (
+        <Modal title="Recurring teaching" onClose={() => setManage(false)}>
+          <div className="space-y-3">
+            {c.rawData.series
+              ?.filter(
+                (s) =>
+                  s.academicYearId === c.academicYearId &&
+                  (c.campus === "All campuses" ||
+                    c.rawData.campuses?.find((x) => x.id === s.campusId)
+                      ?.name === c.campus),
+              )
+              .map((s) => (
+                <div key={s.id} className="rounded-xl border p-3">
+                  <strong>
+                    {c.rawData.modules.find((m) => m.id === s.moduleId)?.name}
+                  </strong>
+                  <p className="text-sm text-slate-500">
+                    {s.startLocalTime}-{s.endLocalTime} ·{" "}
+                    {s.archived ? "Archived" : s.status} · Weeks{" "}
+                    {s.teachingWeeks.join(", ")}
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      className="btn-secondary"
+                      disabled={!c.canWrite}
+                      onClick={() => {
+                        setManage(false);
+                        setSeriesEdit(s);
+                      }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      className="btn-secondary"
+                      disabled={!c.canWrite || busy}
+                      onClick={async () => {
+                        setBusy(true);
+                        try {
+                          if (s.archived)
+                            await c.save("series", { ...s, archived: false });
+                          else await c.archive("series", s.id);
+                        } catch (e) {
+                          setError((e as Error).message);
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    >
+                      {s.archived ? "Restore" : "Archive"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+          </div>
+          <FormError message={error} />
+        </Modal>
+      )}
+      {seriesEdit && (
+        <RecordEditor
+          entity="series"
+          record={seriesEdit}
+          onClose={() => setSeriesEdit(null)}
+        />
+      )}
+    </AppShell>
+  );
 }
-
-function TemplateEditor({ template, weekPattern, setWeekPattern, data, onChange, onClose, onSave }: { template: ActivityTemplate; weekPattern: string; setWeekPattern: (value: string) => void; data: ReturnType<typeof useCampusData>["data"]; onChange: (template: ActivityTemplate) => void; onClose: () => void; onSave: () => void }) {
-  const students = (data.students || []).filter(student => student.campus === template.campus && student.programme === template.programme);
-  function toggleStudent(id: string) { const ids = template.studentIds || []; onChange({ ...template, studentIds: ids.includes(id) ? ids.filter(item => item !== id) : [...ids, id] }); }
-  return <div className="fixed inset-0 z-50 grid place-items-center bg-navy/40 p-4"><div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-3xl bg-white p-6 shadow-executive"><div className="flex items-start justify-between gap-4"><div><h3 className="text-xl font-bold text-navy">Edit Activity Template</h3><p className="mt-1 text-sm text-slate-500">{template.campus} · {template.moduleCode} · {template.moduleName}</p></div><button onClick={onClose} className="grid h-10 w-10 place-items-center rounded-xl bg-slate-100"><X size={18}/></button></div><div className="mt-5 grid gap-4 md:grid-cols-2"><Field label="Template name"><input className="input w-full" value={template.name} onChange={event => onChange({ ...template, name: event.target.value })}/></Field><Field label="Activity type"><select className="input w-full" value={template.activityType} onChange={event => onChange({ ...template, activityType: event.target.value })}><option>Workshop</option><option>Large Group</option><option>Advocacy</option><option>Oral Skills</option><option>Assessment</option><option>Meeting</option></select></Field><Field label="Duration in hours"><input className="input w-full" type="number" min="0.25" step="0.25" value={template.durationHours} onChange={event => onChange({ ...template, durationHours: Number(event.target.value) })}/></Field><Field label="Weekly sessions"><input className="input w-full" type="number" min="1" value={template.weeklySessions} onChange={event => onChange({ ...template, weeklySessions: Number(event.target.value) })}/></Field><Field label="Teaching weeks"><input className="input w-full" value={weekPattern} onChange={event => setWeekPattern(event.target.value)} placeholder="1-12 or 1,3,5,7"/></Field><Field label="Tutor suitability"><input className="input w-full" value={template.lecturerSuitability} onChange={event => onChange({ ...template, lecturerSuitability: event.target.value })}/></Field><Field label="Location suitability"><input className="input w-full" value={template.roomSuitability} onChange={event => onChange({ ...template, roomSuitability: event.target.value })}/></Field><Field label="Preferred days"><input className="input w-full" value={template.preferredDays} onChange={event => onChange({ ...template, preferredDays: event.target.value })}/></Field><Field label="Preferred time"><select className="input w-full" value={template.preferredTime} onChange={event => onChange({ ...template, preferredTime: event.target.value })}><option value="">No preference</option><option>Morning</option><option>Afternoon</option><option>Evening</option></select></Field><Field label="Publication rule"><select className="input w-full" value={template.publicationRule} onChange={event => onChange({ ...template, publicationRule: event.target.value as ActivityTemplate["publicationRule"] })}><option>Standard</option><option>Hold until approved</option></select></Field></div><StudentSelector students={students} selected={template.studentIds || []} onToggle={toggleStudent}/><Validation template={{ ...template, teachingWeeks: parseWeekPattern(weekPattern), plannedSize: (template.studentIds || []).length || template.plannedSize }}/><div className="mt-6 flex justify-end gap-2"><button onClick={onClose} className="btn-secondary">Cancel</button><button onClick={onSave} className="btn-primary">Save template</button></div></div></div>;
-}
-
-function CreateTemplate({ campus, data, onClose, onCreate }: { campus: string; data: ReturnType<typeof useCampusData>["data"]; onClose: () => void; onCreate: (template: ActivityTemplate) => void }) {
-  const programmes = (data.programmes || []).filter(item => item.campus === campus);
-  const [form, setForm] = useState({ programme: programmes[0]?.code || "", moduleCode: "", name: "", activityType: "Workshop", durationHours: 2, weeklySessions: 1, teachingWeeks: "1-12", studentIds: [] as string[], lecturerSuitability: "", roomSuitability: "Workshop room", preferredDays: "", preferredTime: "", publicationRule: "Standard" as ActivityTemplate["publicationRule"] });
-  const programme = programmes.find(item => item.code === form.programme);
-  const modules = data.modules.filter(item => item.campus === campus && item.course === form.programme);
-  const selectedModule = modules.find(item => item.code === form.moduleCode);
-  const students = (data.students || []).filter(student => student.campus === campus && student.programme === form.programme);
-  const staff = data.lecturers.filter(item => staffCanTeachAtCampus(item, campus));
-  function toggleStudent(id: string) { setForm(current => ({ ...current, studentIds: current.studentIds.includes(id) ? current.studentIds.filter(item => item !== id) : [...current.studentIds, id] })); }
-  function submit() { if (!programme || !selectedModule || !form.name.trim()) return; const template: ActivityTemplate = { id: `AT-${Date.now()}`, name: form.name.trim(), campus, programme: programme.code, moduleCode: selectedModule.code, moduleName: selectedModule.name, activityType: form.activityType, plannedSize: form.studentIds.length, durationHours: form.durationHours, weeklySessions: form.weeklySessions, teachingWeeks: parseWeekPattern(form.teachingWeeks), studentIds: form.studentIds, studentGroup: selectedModule.studentGroup || "", lecturerSuitability: form.lecturerSuitability || selectedModule.lecturerName || "", roomSuitability: form.roomSuitability, preferredDays: form.preferredDays, preferredTime: form.preferredTime, publicationRule: form.publicationRule, status: "Draft", updatedAt: new Date().toISOString() }; onCreate({ ...template, status: templateStatus(template) }); }
-  return <div className="fixed inset-0 z-50 grid place-items-center bg-navy/40 p-4"><div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-3xl bg-white p-6 shadow-executive"><div className="flex items-start justify-between"><div><h3 className="flex items-center gap-2 text-xl font-bold text-navy"><Plus size={20}/>Create Activity Template</h3><p className="mt-1 text-sm text-slate-500">New template will be maintained under {campus}.</p></div><button onClick={onClose} className="grid h-10 w-10 place-items-center rounded-xl bg-slate-100"><X size={18}/></button></div><div className="mt-5 grid gap-4 md:grid-cols-2"><Field label="Campus"><input className="input w-full bg-slate-50" value={campus} disabled/></Field><Field label="Programme of Study"><select className="input w-full" value={form.programme} onChange={event => setForm({ ...form, programme: event.target.value, moduleCode: "", studentIds: [] })}>{programmes.map(item => <option key={item.id} value={item.code}>{item.code} · {item.name}</option>)}</select></Field><Field label="Module"><select className="input w-full" value={form.moduleCode} onChange={event => { const module = modules.find(item => item.code === event.target.value); setForm({ ...form, moduleCode: event.target.value, name: module ? `${campus} – ${form.programme} – ${module.name} ${form.activityType}` : form.name, lecturerSuitability: module?.lecturerName || form.lecturerSuitability, roomSuitability: module?.roomTypeRequired || form.roomSuitability }); }}><option value="">Select module</option>{modules.map(item => <option key={item.code} value={item.code}>{item.code} · {item.name}</option>)}</select></Field><Field label="Template name"><input className="input w-full" value={form.name} onChange={event => setForm({ ...form, name: event.target.value })}/></Field><Field label="Activity type"><select className="input w-full" value={form.activityType} onChange={event => setForm({ ...form, activityType: event.target.value })}><option>Workshop</option><option>Large Group</option><option>Advocacy</option><option>Oral Skills</option><option>Assessment</option></select></Field><Field label="Teaching weeks"><input className="input w-full" value={form.teachingWeeks} onChange={event => setForm({ ...form, teachingWeeks: event.target.value })}/></Field><Field label="Duration"><input className="input w-full" type="number" min="0.25" step="0.25" value={form.durationHours} onChange={event => setForm({ ...form, durationHours: Number(event.target.value) })}/></Field><Field label="Weekly sessions"><input className="input w-full" type="number" min="1" value={form.weeklySessions} onChange={event => setForm({ ...form, weeklySessions: Number(event.target.value) })}/></Field><Field label="Tutor suitability"><select className="input w-full" value={form.lecturerSuitability} onChange={event => setForm({ ...form, lecturerSuitability: event.target.value })}><option value="">Select staff member</option>{staff.map(item => <option key={item.id || item.name}>{item.name}</option>)}</select></Field><Field label="Location suitability"><input className="input w-full" value={form.roomSuitability} onChange={event => setForm({ ...form, roomSuitability: event.target.value })}/></Field></div><StudentSelector students={students} selected={form.studentIds} onToggle={toggleStudent}/><div className="mt-6 flex justify-end gap-2"><button className="btn-secondary" onClick={onClose}>Cancel</button><button className="btn-primary" onClick={submit} disabled={!selectedModule || !form.name.trim() || !form.studentIds.length}>Create template</button></div></div></div>;
-}
-
-function StudentSelector({ students, selected, onToggle }: { students: NonNullable<ReturnType<typeof useCampusData>["data"]["students"]>; selected: string[]; onToggle: (id: string) => void }) { return <div className="mt-5"><div className="mb-2 flex items-center justify-between"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Individual student allocation</p><span className="text-xs text-slate-500">{selected.length} selected</span></div><div className="grid max-h-56 gap-2 overflow-y-auto rounded-2xl border border-slate-200 p-3 md:grid-cols-2">{students.map(student => <label key={student.id} className="flex items-start gap-2 rounded-xl p-2 hover:bg-slate-50"><input className="mt-1" type="checkbox" checked={selected.includes(student.id)} onChange={() => onToggle(student.id)}/><span><span className="block text-sm font-semibold text-navy">{student.name}</span><span className="text-xs text-slate-500">{student.id}</span></span></label>)}{!students.length && <p className="text-sm text-slate-500">No individual students are available for this campus and programme.</p>}</div></div>; }
-function Validation({ template }: { template: ActivityTemplate }) { return <div className="mt-6 rounded-2xl border border-slate-200 p-4"><h4 className="flex items-center gap-2 font-semibold text-navy"><ClipboardCheck size={18}/>Validation checklist</h4><div className="mt-3 grid gap-2 md:grid-cols-2">{validateTemplate(template).map(item => <div key={item.label} className={item.passed ? "rounded-xl bg-emerald-50 p-3" : "rounded-xl bg-red-50 p-3"}><p className={item.passed ? "flex items-center gap-2 text-sm font-semibold text-emerald-700" : "flex items-center gap-2 text-sm font-semibold text-red-700"}>{item.passed ? <CheckCircle2 size={16}/> : <AlertCircle size={16}/>} {item.label}</p>{!item.passed && <p className="mt-1 text-xs text-red-600">{item.message}</p>}</div>)}</div></div>; }
-function Metric({ label, value, detail, tone = "normal" }: { label: string; value: number; detail: string; tone?: "normal" | "good" | "bad" }) { const style = tone === "good" ? "text-emerald-700" : tone === "bad" ? "text-red-700" : "text-navy"; return <div className="enterprise-card p-5"><p className="text-sm font-medium text-slate-500">{label}</p><p className={`mt-3 text-3xl font-bold ${style}`}>{value}</p><p className="mt-2 text-xs leading-5 text-slate-500">{detail}</p></div>; }
-function Checklist({ label, passed }: { label: string; passed: boolean }) { return <div className={passed ? "rounded-2xl bg-emerald-50 p-4" : "rounded-2xl bg-red-50 p-4"}><p className={passed ? "flex items-center gap-2 text-sm font-semibold text-emerald-700" : "flex items-center gap-2 text-sm font-semibold text-red-700"}>{passed ? <CheckCircle2 size={17}/> : <AlertCircle size={17}/>} {label}</p></div>; }
-function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label><span className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-500">{label}</span>{children}</label>; }
-function Status({ value }: { value: ActivityTemplate["status"] }) { const className = value === "Ready" ? "bg-emerald-50 text-emerald-700" : value === "Blocked" ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-700"; return <span className={`badge ${className}`}>{value}</span>; }

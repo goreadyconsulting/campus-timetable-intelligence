@@ -1,88 +1,345 @@
 "use client";
-
 import { useMemo, useState } from "react";
-import { CheckCircle2, CircleAlert, Download, History, Send, ShieldCheck } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { useCampusData } from "@/components/data-context";
-import { useWorkflow } from "@/components/workflow-context";
-import { downloadCsv, timetableRows } from "@/lib/export";
-import { readinessSummary } from "@/lib/workflow";
-
-export default function PublicationPage() {
-  const { data } = useCampusData();
-  const { templates, publication, updatePublication, publishTimetable } = useWorkflow();
-  const readiness = useMemo(() => readinessSummary(data, templates), [data, templates]);
-  const [publishedBy, setPublishedBy] = useState("Timetabling team");
-  const [notes, setNotes] = useState(publication.notes);
-  const [message, setMessage] = useState("");
-
-  function markReady() {
-    if (!readiness.ready) {
-      setMessage("The timetable cannot be marked ready until every blocking validation check is resolved.");
-      return;
+import { Field, FormError } from "@/components/modal";
+import { publicationReadiness } from "@/lib/domain";
+import { resolveOccurrences } from "@/lib/recurrence";
+import { downloadCsv, timetableRows, downloadIcs } from "@/lib/export";
+import type { PublicationSnapshot } from "@/types/scheduling";
+export default function Publication() {
+  const c = useCampusData(),
+    y = c.rawData.academicYears?.find((y) => y.id === c.academicYearId);
+  const [start, setStart] = useState(""),
+    [end, setEnd] = useState(""),
+    [notes, setNotes] = useState(""),
+    [name, setName] = useState("Timetabling team"),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false),
+    [snapshot, setSnapshot] = useState<PublicationSnapshot | null>(null);
+  const startDate = start || y?.startDate || "",
+    endDate = end || y?.endDate || "",
+    campusIds = (c.rawData.campuses || [])
+      .filter(
+        (x) =>
+          !x.archived &&
+          x.active &&
+          (c.campus === "All campuses" || x.name === c.campus),
+      )
+      .map((x) => x.id);
+  const check = useMemo(() => {
+    try {
+      return {
+        ...publicationReadiness(
+          c.rawData,
+          startDate,
+          endDate,
+          campusIds,
+          c.academicYearId,
+        ),
+        error: "",
+      };
+    } catch (e) {
+      return {
+        ready: false,
+        sessions: [],
+        conflicts: [],
+        missing: [],
+        error: (e as Error).message,
+      };
     }
-    updatePublication({ status: "Ready for Review", notes });
-    setMessage("The timetable has been marked Ready for Review.");
-  }
-
-  function publish() {
-    if (!readiness.ready) {
-      setMessage("Resolve the blocking checks before publishing the timetable.");
-      return;
+  }, [c.rawData, startDate, endDate, c.campus, c.academicYearId]);
+  const state = c.rawData.publication?.status || "Draft";
+  async function action(status: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await c.run(
+        status === "Published"
+          ? {
+              action: "publish",
+              expectedDataRevision: c.rawData.dataRevision,
+              scope: {
+                startDate,
+                endDate,
+                campusIds,
+                academicYearId: c.academicYearId,
+                notes,
+                publishedBy: name,
+              },
+            }
+          : {
+              action: "review",
+              status,
+              notes,
+              expectedDataRevision: c.rawData.dataRevision,
+            },
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
     }
-    publishTimetable(publishedBy, notes);
-    setMessage("The publication snapshot has been recorded. Calendar and email delivery are represented for evaluation and are not connected to live institutional systems.");
   }
-
-  return <AppShell title="Review & Publication" subtitle="Validate, approve and record timetable publication decisions">
-    {message && <div className="mb-5 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm font-semibold text-blue-800">{message}</div>}
-
-    <div className="grid gap-5 md:grid-cols-4">
-      <Metric label="Publication status" value={publication.status} detail={`Version ${publication.version}`}/>
-      <Metric label="Scheduled sessions" value={String(data.sessions.length)} detail="Included in the current scope"/>
-      <Metric label="Templates blocked" value={String(readiness.blockedTemplates)} detail="Must be resolved before publication" tone={readiness.blockedTemplates ? "bad" : "good"}/>
-      <Metric label="Open conflicts" value={String(readiness.openConflicts)} detail="Hard timetable issues" tone={readiness.openConflicts ? "bad" : "good"}/>
-    </div>
-
-    <div className="mt-6 grid gap-6 xl:grid-cols-[1fr_420px]">
-      <div className="space-y-6">
+  const historical = snapshot
+    ? resolveOccurrences(
+        snapshot.data,
+        snapshot.publication.startDate,
+        snapshot.publication.endDate,
+        true,
+      ).filter(
+        (s) =>
+          snapshot.publication.campusIds.includes(s.campusId!) &&
+          s.academicYearId === snapshot.publication.academicYearId,
+      )
+    : [];
+  const current = snapshot
+    ? resolveOccurrences(
+        c.rawData,
+        snapshot.publication.startDate,
+        snapshot.publication.endDate,
+        true,
+      ).filter(
+        (s) =>
+          snapshot.publication.campusIds.includes(s.campusId!) &&
+          s.academicYearId === snapshot.publication.academicYearId,
+      )
+    : [];
+  const signature = (s: any) =>
+    JSON.stringify([
+      s.date,
+      s.start,
+      s.end,
+      s.locationId,
+      s.staffIds,
+      s.studentIds,
+      s.status === "Cancelled",
+    ]);
+  const diff = [
+    ...new Set([...historical.map((s) => s.id), ...current.map((s) => s.id)]),
+  ].flatMap((id) => {
+    const before = historical.find((s) => s.id === id),
+      after = current.find((s) => s.id === id);
+    return signature(before || {}) === signature(after || {})
+      ? []
+      : [
+          {
+            id,
+            name: after?.moduleName || before?.moduleName,
+            type: !before
+              ? "Added"
+              : !after || after.status === "Cancelled"
+                ? "Cancelled"
+                : "Changed",
+            before: before
+              ? `${before.date} ${before.start}-${before.end} ${before.room}`
+              : "",
+            after: after
+              ? `${after.date} ${after.start}-${after.end} ${after.room}`
+              : "",
+          },
+        ];
+  });
+  return (
+    <AppShell
+      title="Review & Publication"
+      subtitle="Approve shared revisions and release immutable timetable versions"
+    >
+      <div className="grid gap-6 xl:grid-cols-[1.4fr_1fr]">
         <div className="enterprise-card p-5">
-          <div className="flex items-start gap-3"><div className="grid h-11 w-11 place-items-center rounded-2xl bg-teal-50 text-teal-700"><ShieldCheck size={21}/></div><div><h3 className="font-bold text-navy">Publication readiness</h3><p className="mt-1 text-sm text-slate-500">The checks below combine activity-template validation with the current scheduled timetable.</p></div></div>
-          <div className="mt-5 space-y-3">{readiness.checks.map(check => <div key={check.label} className={check.passed ? "flex items-start gap-3 rounded-2xl bg-emerald-50 p-4" : "flex items-start gap-3 rounded-2xl bg-red-50 p-4"}>{check.passed ? <CheckCircle2 className="mt-0.5 shrink-0 text-emerald-600" size={19}/> : <CircleAlert className="mt-0.5 shrink-0 text-red-600" size={19}/>}<div><p className={check.passed ? "font-semibold text-emerald-800" : "font-semibold text-red-800"}>{check.label}</p><p className={check.passed ? "mt-1 text-sm text-emerald-700" : "mt-1 text-sm text-red-700"}>{check.detail}</p></div></div>)}</div>
+          <div className="flex justify-between">
+            <h2 className="text-lg font-bold">Working timetable</h2>
+            <span className="badge bg-teal-50 text-teal-800">{state}</span>
+          </div>
+          <div className="mt-5 grid gap-4 sm:grid-cols-2">
+            <Field label="Publish from">
+              <input
+                className="input"
+                type="date"
+                value={startDate}
+                onChange={(e) => setStart(e.target.value)}
+              />
+            </Field>
+            <Field label="Publish until">
+              <input
+                className="input"
+                type="date"
+                value={endDate}
+                onChange={(e) => setEnd(e.target.value)}
+              />
+            </Field>
+            <Field label="Published by">
+              <input
+                className="input"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </Field>
+            <div className="self-end text-sm">
+              {c.campus} · {y?.name}
+            </div>
+            <div className="sm:col-span-2">
+              <Field label="Review and release notes">
+                <textarea
+                  className="input"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                />
+              </Field>
+            </div>
+          </div>
+          <div
+            className={`my-4 rounded-xl p-4 ${check.ready ? "bg-emerald-50 text-emerald-900" : "bg-amber-50 text-amber-900"}`}
+          >
+            <strong>
+              {check.ready ? "Ready for release checks" : "Needs attention"}
+            </strong>
+            <p className="mt-1 text-sm">
+              {check.sessions.length} dated sessions · {check.conflicts.length}{" "}
+              hard conflicts · {check.missing.length} incomplete activity
+              requirements
+            </p>
+            {check.conflicts.slice(0, 6).map((x) => (
+              <p key={x.id} className="mt-1 text-xs">
+                {x.type}: {x.time}
+              </p>
+            ))}
+            {check.missing.slice(0, 6).map((x, i) => (
+              <p className="mt-1 text-xs" key={i}>
+                {x}
+              </p>
+            ))}
+          </div>
+          <FormError message={error || check.error} />
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="btn-secondary"
+              disabled={busy || !c.canWrite || state === "In Review"}
+              onClick={() => void action("In Review")}
+            >
+              Submit for review
+            </button>
+            <button
+              className="btn-secondary"
+              disabled={busy || !c.canWrite || state !== "In Review"}
+              onClick={() => void action("Approved")}
+            >
+              Approve current revision
+            </button>
+            <button
+              className="btn-primary"
+              disabled={
+                busy ||
+                !c.canWrite ||
+                state !== "Approved" ||
+                !check.ready ||
+                !name.trim()
+              }
+              onClick={() => void action("Published")}
+            >
+              Publish version
+            </button>
+          </div>
+          <p className="mt-4 text-xs text-slate-500">
+            Changes after approval return the working timetable to Draft.
+            Previously published versions remain unchanged.
+          </p>
         </div>
-
         <div className="enterprise-card p-5">
-          <div className="flex items-center justify-between gap-3"><div><h3 className="font-bold text-navy">Publication scope</h3><p className="mt-1 text-sm text-slate-500">Review what will be represented in the published timetable snapshot.</p></div><button onClick={() => downloadCsv(`timetable-publication-v${publication.version}.csv`, timetableRows(data.sessions))} className="btn-secondary"><Download size={16}/>Export snapshot</button></div>
-          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3"><Scope label="Campuses" value={new Set(data.sessions.map(session => session.campus)).size}/><Scope label="Programmes" value={new Set(data.sessions.map(session => session.course)).size}/><Scope label="Student groups" value={new Set(data.sessions.map(session => session.group)).size}/><Scope label="Lecturers" value={new Set(data.sessions.map(session => session.lecturer)).size}/><Scope label="Rooms" value={new Set(data.sessions.map(session => session.room)).size}/><Scope label="One-off sessions" value={data.sessions.filter(session => Boolean(session.date)).length}/></div>
-        </div>
-
-        <div className="enterprise-card p-5">
-          <div className="flex items-center gap-2"><History size={18}/><h3 className="font-bold text-navy">Current publication record</h3></div>
-          <dl className="mt-4 grid gap-3 md:grid-cols-2"><Record label="Version" value={String(publication.version)}/><Record label="Scope" value={publication.scope}/><Record label="Published by" value={publication.publishedBy || "Not published"}/><Record label="Published at" value={publication.lastPublishedAt ? new Date(publication.lastPublishedAt).toLocaleString("en-GB") : "Not published"}/></dl>
+          <h2 className="text-lg font-bold">Published versions</h2>
+          {!(c.rawData.publications || []).length && (
+            <p className="mt-4 text-sm text-slate-500">
+              No immutable versions have been published yet.
+            </p>
+          )}
+          {[...(c.rawData.publications || [])].reverse().map((p) => (
+            <button
+              className="mt-3 block w-full rounded-xl border p-4 text-left hover:bg-slate-50"
+              key={p.id}
+              onClick={async () => {
+                try {
+                  setSnapshot(
+                    await c.read("publicationSnapshot", { id: p.id }),
+                  );
+                  setError("");
+                } catch (e) {
+                  setError((e as Error).message);
+                }
+              }}
+            >
+              <strong>Version {p.version}</strong>
+              <p className="text-sm">
+                {p.startDate} to {p.endDate} · {p.sessionCount} sessions
+              </p>
+              <p className="text-xs text-slate-500">
+                {p.publishedAt} · {p.publishedBy}
+              </p>
+              <p className="mt-1 text-sm">{p.notes}</p>
+            </button>
+          ))}
         </div>
       </div>
-
-      <aside className="enterprise-card h-fit p-5 xl:sticky xl:top-28">
-        <h3 className="font-bold text-navy">Review decision</h3>
-        <p className="mt-1 text-sm leading-6 text-slate-500">Use this section to record the review state and publication snapshot during pilot testing.</p>
-        <label className="mt-5 block"><span className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-500">Reviewed or published by</span><input className="input w-full" value={publishedBy} onChange={event => setPublishedBy(event.target.value)}/></label>
-        <label className="mt-4 block"><span className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-500">Review notes</span><textarea className="min-h-32 w-full rounded-xl border border-slate-200 p-3 text-sm outline-none ring-tealBrand/20 focus:ring-4" value={notes} onChange={event => setNotes(event.target.value)} placeholder="Record approvals, exceptions or changes required before release."/></label>
-        <div className="mt-5 space-y-2"><button onClick={markReady} disabled={!readiness.ready} className="btn-secondary w-full disabled:cursor-not-allowed disabled:opacity-50"><ShieldCheck size={16}/>Mark Ready for Review</button><button onClick={publish} disabled={!readiness.ready} className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-50"><Send size={16}/>Publish snapshot</button></div>
-        <div className="mt-5 rounded-2xl bg-amber-50 p-4 text-sm leading-6 text-amber-800">This pilot records the publication decision and timetable version. It does not send live student or staff calendar updates.</div>
-      </aside>
-    </div>
-  </AppShell>;
-}
-
-function Metric({ label, value, detail, tone = "normal" }: { label: string; value: string; detail: string; tone?: "normal" | "good" | "bad" }) {
-  const style = tone === "good" ? "text-emerald-700" : tone === "bad" ? "text-red-700" : "text-navy";
-  return <div className="enterprise-card p-5"><p className="text-sm text-slate-500">{label}</p><p className={`mt-3 text-2xl font-bold ${style}`}>{value}</p><p className="mt-2 text-xs leading-5 text-slate-500">{detail}</p></div>;
-}
-
-function Scope({ label, value }: { label: string; value: number }) {
-  return <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase text-slate-400">{label}</p><p className="mt-2 text-2xl font-bold text-navy">{value}</p></div>;
-}
-
-function Record({ label, value }: { label: string; value: string }) {
-  return <div className="rounded-2xl bg-slate-50 p-4"><dt className="text-xs font-bold uppercase text-slate-400">{label}</dt><dd className="mt-1 font-semibold text-slate-700">{value}</dd></div>;
+      {snapshot && (
+        <div className="enterprise-card mt-6 overflow-hidden">
+          <div className="flex flex-wrap justify-between gap-3 p-5">
+            <div>
+              <h2 className="font-bold">
+                Version {snapshot.publication.version} compared with working
+                data
+              </h2>
+              <p className="text-sm text-slate-500">
+                {diff.length} differences in the published scope
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                className="btn-secondary"
+                onClick={() =>
+                  downloadCsv(
+                    `published-v${snapshot.publication.version}.csv`,
+                    timetableRows(historical),
+                  )
+                }
+              >
+                Published CSV
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() =>
+                  downloadIcs(
+                    `published-v${snapshot.publication.version}.ics`,
+                    historical,
+                  )
+                }
+              >
+                Published calendar
+              </button>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr>
+                  <th>Change</th>
+                  <th>Module</th>
+                  <th>Published</th>
+                  <th>Working</th>
+                </tr>
+              </thead>
+              <tbody>
+                {diff.map((x) => (
+                  <tr key={x.id}>
+                    <td>{x.type}</td>
+                    <td>{x.name}</td>
+                    <td>{x.before}</td>
+                    <td>{x.after}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </AppShell>
+  );
 }

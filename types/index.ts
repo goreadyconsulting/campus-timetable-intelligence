@@ -1,4 +1,25 @@
-export type Room = {
+import type {
+  Versioned,
+  Campus,
+  AcademicYear,
+  Term,
+  TeachingWeek,
+  ScheduleSeries,
+  ScheduleVariant,
+  AvailabilityRule,
+  TravelRule,
+  Allocation,
+  ConflictReview,
+  PublicationVersion,
+  AuditEntry,
+  SeriesPatch,
+} from "./scheduling";
+import type {
+  ActivityTemplate,
+  AvailabilityException,
+  PublicationState,
+} from "./workflow";
+export type Room = Versioned & {
   id?: string;
   room: string;
   building: string;
@@ -8,7 +29,7 @@ export type Room = {
   status: "Available" | "Occupied" | "Maintenance" | string;
 };
 
-export type Lecturer = {
+export type Lecturer = Versioned & {
   id?: string;
   name: string;
   department: string;
@@ -22,7 +43,7 @@ export type Lecturer = {
   maxWeeklyHours?: number;
 };
 
-export type StudentGroup = {
+export type StudentGroup = Versioned & {
   id?: string;
   name: string;
   course: string;
@@ -30,7 +51,7 @@ export type StudentGroup = {
   campus: string;
 };
 
-export type Programme = {
+export type Programme = Versioned & {
   id: string;
   code: string;
   name: string;
@@ -39,7 +60,7 @@ export type Programme = {
   status: "Active" | "Inactive" | string;
 };
 
-export type Student = {
+export type Student = Versioned & {
   id: string;
   name: string;
   email?: string;
@@ -51,7 +72,7 @@ export type Student = {
   status: "Active" | "Inactive" | string;
 };
 
-export type Module = {
+export type Module = Versioned & {
   id?: string;
   code: string;
   name: string;
@@ -67,6 +88,20 @@ export type Module = {
 };
 
 export type Session = {
+  seriesId?: string;
+  variantId?: string;
+  source?: "Base" | "Variant";
+  originalDate?: string;
+  teachingWeek?: number;
+  academicYearId?: string;
+  campusId?: string;
+  moduleId?: string;
+  locationId?: string;
+  staffIds?: string[];
+  timeZone?: string;
+  startAtUtc?: string;
+  endAtUtc?: string;
+  base?: SeriesPatch;
   id: string;
   day: string;
   date?: string;
@@ -98,6 +133,13 @@ export type Conflict = {
   description: string;
   fix: string;
   resolved?: boolean;
+  fingerprint?: string;
+  occurrenceIds?: string[];
+  seriesIds?: string[];
+  campusIds?: string[];
+  studentIds?: string[];
+  resolutionStatus?: "Open" | "Acknowledged" | "Resolved";
+  resolutionNote?: string;
 };
 
 export type SchedulingRequirement = {
@@ -120,4 +162,21 @@ export type AppData = {
   conflicts: Conflict[];
   requirements: SchedulingRequirement[];
   generatedAt?: string;
+  schemaVersion?: string;
+  dataRevision?: number;
+  campuses?: Campus[];
+  academicYears?: AcademicYear[];
+  terms?: Term[];
+  teachingWeeks?: TeachingWeek[];
+  series?: ScheduleSeries[];
+  variants?: ScheduleVariant[];
+  templates?: ActivityTemplate[];
+  exceptions?: AvailabilityException[];
+  availabilityRules?: AvailabilityRule[];
+  travelRules?: TravelRule[];
+  allocations?: Allocation[];
+  conflictReviews?: ConflictReview[];
+  publications?: PublicationVersion[];
+  publication?: PublicationState;
+  audit?: AuditEntry[];
 };

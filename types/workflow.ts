@@ -1,6 +1,17 @@
-export type ActivityTemplateStatus = "Draft" | "Ready" | "Blocked";
+import type { Versioned } from "./scheduling";
+export type ActivityTemplateStatus =
+  | "Draft"
+  | "Ready"
+  | "Blocked"
+  | "Scheduled"
+  | "Partially scheduled"
+  | "Archived";
 
-export type ActivityTemplate = {
+export type ActivityTemplate = Versioned & {
+  academicYearId?: string;
+  moduleId?: string;
+  avoidedDays?: string;
+  notes?: string;
   id: string;
   name: string;
   campus: string;
@@ -23,7 +34,8 @@ export type ActivityTemplate = {
   updatedAt: string;
 };
 
-export type AvailabilityException = {
+export type AvailabilityException = Versioned & {
+  timeZone?: string;
   id: string;
   resourceType: "Lecturer" | "Student" | "Student group" | "Room";
   resourceId: string;
@@ -38,9 +50,16 @@ export type AvailabilityException = {
   createdAt: string;
 };
 
-export type PublicationStatus = "Draft" | "Ready for Review" | "Published";
+export type PublicationStatus =
+  | "Draft"
+  | "Ready for Review"
+  | "In Review"
+  | "Approved"
+  | "Published"
+  | "Superseded";
 
-export type PublicationState = {
+export type PublicationState = Versioned & {
+  dataRevision?: number;
   version: number;
   status: PublicationStatus;
   scope: string;

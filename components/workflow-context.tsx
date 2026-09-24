@@ -1,184 +1,58 @@
 "use client";
-
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { useCampusData } from "@/components/data-context";
-import { createTemplatesFromData, templateStatus } from "@/lib/workflow";
-import { loadWorkflowData, saveWorkflowData } from "@/lib/backend";
-import type { ActivityTemplate, AvailabilityException, PublicationState } from "@/types/workflow";
-
-const STORAGE_KEY = "cti-guide-workflow-v2";
-
-type WorkflowState = {
-  templates: ActivityTemplate[];
-  exceptions: AvailabilityException[];
-  publication: PublicationState;
-};
-
-type WorkflowContextValue = WorkflowState & {
-  addTemplate: (template: ActivityTemplate) => void;
-  updateTemplate: (id: string, patch: Partial<ActivityTemplate>) => void;
-  refreshTemplates: () => void;
-  addException: (exception: Omit<AvailabilityException, "id" | "createdAt">) => void;
-  removeException: (id: string) => void;
-  updatePublication: (patch: Partial<PublicationState>) => void;
-  publishTimetable: (publishedBy: string, notes: string) => void;
-};
-
-const WorkflowContext = createContext<WorkflowContextValue | null>(null);
-
+import { useCampusData } from "./data-context";
+import type {
+  ActivityTemplate,
+  AvailabilityException,
+  PublicationState,
+} from "@/types/workflow";
+import { createTemplatesFromData } from "@/lib/workflow";
 export function WorkflowProvider({ children }: { children: React.ReactNode }) {
-  const { data, backendConfig } = useCampusData();
-  const [loaded, setLoaded] = useState(false);
-  const [remoteLoaded, setRemoteLoaded] = useState(false);
-  const [state, setState] = useState<WorkflowState>(() => ({
-    templates: [],
-    exceptions: initialExceptions(),
-    publication: initialPublication()
-  }));
-
-  useEffect(() => {
-    let restored: WorkflowState | null = null;
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) restored = JSON.parse(saved) as WorkflowState;
-    } catch {}
-
-    setState(restored || {
-      templates: createTemplatesFromData(data),
-      exceptions: initialExceptions(),
-      publication: initialPublication()
-    });
-    setLoaded(true);
-  }, []);
-
-  useEffect(() => {
-    if (!loaded || remoteLoaded || !backendConfig.backendEnabled || !backendConfig.appsScriptUrl) return;
-    let active = true;
-    void loadWorkflowData(backendConfig)
-      .then(remote => {
-        if (!active) return;
-        if (remote?.templates?.length) setState(remote);
-        setRemoteLoaded(true);
-      })
-      .catch(() => setRemoteLoaded(true));
-    return () => { active = false; };
-  }, [backendConfig, loaded, remoteLoaded]);
-
-  useEffect(() => {
-    if (!loaded) return;
-    setState(current => current.templates.length || !data.modules.length
-      ? current
-      : { ...current, templates: createTemplatesFromData(data) });
-  }, [data.modules.length, loaded]);
-
-  useEffect(() => {
-    if (!loaded) return;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch {}
-
-    if (!backendConfig.backendEnabled || !backendConfig.appsScriptUrl) return;
-    const timer = window.setTimeout(() => {
-      void saveWorkflowData(backendConfig, state).catch(error => console.warn("Workflow save could not be confirmed.", error));
-    }, 500);
-    return () => window.clearTimeout(timer);
-  }, [backendConfig, loaded, state]);
-
-  const value = useMemo<WorkflowContextValue>(() => ({
-    ...state,
-    addTemplate: template => setState(current => ({
-      ...current,
-      templates: [{ ...template, status: templateStatus(template), updatedAt: new Date().toISOString() }, ...current.templates],
-      publication: { ...current.publication, status: "Draft" }
-    })),
-    updateTemplate: (id, patch) => setState(current => ({
-      ...current,
-      templates: current.templates.map(template => {
-        if (template.id !== id) return template;
-        const updated = { ...template, ...patch, updatedAt: new Date().toISOString() };
-        return { ...updated, status: templateStatus(updated) };
-      }),
-      publication: { ...current.publication, status: "Draft" }
-    })),
-    refreshTemplates: () => setState(current => ({
-      ...current,
-      templates: createTemplatesFromData(data),
-      publication: { ...current.publication, status: "Draft" }
-    })),
-    addException: exception => setState(current => ({
-      ...current,
-      exceptions: [{ ...exception, id: `AE-${Date.now()}`, createdAt: new Date().toISOString() }, ...current.exceptions],
-      publication: { ...current.publication, status: "Draft" }
-    })),
-    removeException: id => setState(current => ({
-      ...current,
-      exceptions: current.exceptions.filter(exception => exception.id !== id),
-      publication: { ...current.publication, status: "Draft" }
-    })),
-    updatePublication: patch => setState(current => ({
-      ...current,
-      publication: { ...current.publication, ...patch }
-    })),
-    publishTimetable: (publishedBy, notes) => setState(current => ({
-      ...current,
-      publication: {
-        ...current.publication,
-        version: current.publication.version + 1,
-        status: "Published",
-        notes,
-        lastPublishedAt: new Date().toISOString(),
-        publishedBy: publishedBy || "Timetabling team"
-      }
-    }))
-  }), [data, state]);
-
-  return <WorkflowContext.Provider value={value}>{children}</WorkflowContext.Provider>;
+  return <>{children}</>;
 }
-
 export function useWorkflow() {
-  const context = useContext(WorkflowContext);
-  if (!context) throw new Error("useWorkflow must be used inside WorkflowProvider");
-  return context;
-}
-
-function initialPublication(): PublicationState {
+  const c = useCampusData(),
+    d = c.rawData;
   return {
-    version: 1,
-    status: "Draft",
-    scope: "All campuses",
-    notes: ""
-  };
-}
-
-function initialExceptions(): AvailabilityException[] {
-  return [
-    {
-      id: "AE001",
-      resourceType: "Lecturer",
-      resourceId: "L4",
-      resourceName: "DAVIES, Oliver",
-      startDate: "2026-09-14",
-      endDate: "2026-09-14",
-      startTime: "09:00",
-      endTime: "17:00",
-      availabilityType: "Unavailable",
-      reason: "Conference",
-      notes: "Individual teaching-week exception",
-      createdAt: "2026-08-03T00:00:00.000Z"
+    templates: (d.templates || []).filter((t) => !t.archived),
+    exceptions: (d.exceptions || []).filter((e) => !e.archived),
+    publication: d.publication || {
+      version: 0,
+      status: "Draft",
+      scope: "All campuses",
+      notes: "",
     },
-    {
-      id: "AE002",
-      resourceType: "Room",
-      resourceId: "MAN-MC-01",
-      resourceName: "Moot Court 1",
-      startDate: "2026-10-05",
-      endDate: "2026-10-06",
-      startTime: "08:00",
-      endTime: "19:00",
-      availabilityType: "Unavailable",
-      reason: "Maintenance",
-      notes: "Room temporarily unavailable",
-      createdAt: "2026-08-03T00:00:00.000Z"
-    }
-  ];
+    addTemplate: (t: ActivityTemplate) => c.save("templates", t),
+    updateTemplate: (id: string, patch: Partial<ActivityTemplate>) =>
+      c.save("templates", {
+        ...d.templates?.find((t) => t.id === id),
+        ...patch,
+      }),
+    refreshTemplates: async () => {
+      const rows = createTemplatesFromData(d).filter(
+        (t) =>
+          !d.templates?.some((x) => x.moduleId === t.moduleId && !x.archived),
+      );
+      if (rows.length)
+        await c.mutate(
+          rows.map((record) => ({
+            entity: "templates",
+            operation: "create",
+            record,
+          })),
+        );
+    },
+    addException: (e: Omit<AvailabilityException, "id" | "createdAt">) =>
+      c.save("exceptions", e),
+    removeException: (id: string) => c.archive("exceptions", id),
+    updatePublication: (p: Partial<PublicationState>) =>
+      c.run({
+        action: "review",
+        status: p.status,
+        notes: p.notes,
+        expectedDataRevision: d.dataRevision,
+      }),
+    publishTimetable: () => {
+      throw new Error("Select the publication scope and review it first.");
+    },
+  };
 }
