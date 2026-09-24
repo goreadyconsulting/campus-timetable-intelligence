@@ -28,7 +28,8 @@ const defaultConfig: RuntimeConfig = {
   dataMode: "training",
 };
 
-const REQUEST_TIMEOUT_MS = 15000;
+const READ_TIMEOUT_MS = 60000;
+const WRITE_TIMEOUT_MS = 60000;
 
 export async function getRuntimeConfig(): Promise<RuntimeConfig> {
   if (typeof window === "undefined") return defaultConfig;
@@ -204,6 +205,12 @@ export async function askGemini(
   return result.answer || null;
 }
 async function getJsonWithJsonpFallback(url: string) {
+  // Apps Script ContentService responses are cross-origin and redirect through
+  // script.googleusercontent.com. In the browser, JSONP is the reliable read
+  // transport and avoids waiting for a fetch/CORS failure before retrying.
+  if (typeof window !== "undefined" && isAppsScriptWebApp(url)) {
+    return jsonp(url);
+  }
   try {
     return await getReadableJson(url);
   } catch (error) {
@@ -212,9 +219,21 @@ async function getJsonWithJsonpFallback(url: string) {
   }
 }
 
+function isAppsScriptWebApp(url: string) {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.hostname === "script.google.com" &&
+      parsed.pathname.startsWith("/macros/s/")
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function getReadableJson(url: string) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
   try {
     const response = await fetch(url, {
       method: "GET",
@@ -232,7 +251,7 @@ async function getReadableJson(url: string) {
 
 async function postReadable(url: string, body: Record<string, unknown>) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), WRITE_TIMEOUT_MS);
   try {
     const response = await fetch(url, {
       method: "POST",
@@ -259,7 +278,7 @@ function jsonp(url: string): Promise<any> {
     const script = document.createElement("script");
     const timer = window.setTimeout(
       () => cleanup(new Error("Backend JSONP request timed out")),
-      REQUEST_TIMEOUT_MS,
+      READ_TIMEOUT_MS,
     );
 
     function cleanup(error?: Error, payload?: unknown) {
