@@ -1,5 +1,11 @@
 "use client";
-import { useEffect, useRef } from "react";
+import {
+  Children,
+  cloneElement,
+  isValidElement,
+  useEffect,
+  useRef,
+} from "react";
 import { createPortal } from "react-dom";
 export function Modal({
   title,
@@ -55,9 +61,17 @@ export function Field({
   children: React.ReactNode;
 }) {
   return (
-    <label className="grid gap-1 text-sm font-medium text-slate-700">
+    <label className="grid content-start gap-1 text-sm font-medium text-slate-700">
       {label}
-      {children}
+      {Children.map(children, (child) =>
+        isValidElement<{ "aria-label"?: string }>(child) &&
+        typeof child.type === "string" &&
+        ["input", "select", "textarea"].includes(child.type)
+          ? cloneElement(child, {
+              "aria-label": child.props["aria-label"] || label,
+            })
+          : child,
+      )}
     </label>
   );
 }

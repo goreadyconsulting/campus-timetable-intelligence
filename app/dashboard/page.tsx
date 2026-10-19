@@ -31,6 +31,95 @@ export default function Dashboard() {
       title="Dashboard"
       subtitle="Teaching operations for the selected campus and week"
     >
+      <section className="mb-6 rounded-2xl border border-teal-100 bg-teal-50/60 p-5 sm:p-6">
+        <h2 className="text-xl font-bold">What would you like to do?</h2>
+        <p className="mt-1 text-sm text-slate-600">
+          Find a class, plan teaching or review what needs attention.
+        </p>
+        <div className="mt-5 grid gap-3 md:grid-cols-3">
+          {[
+            [
+              "/timetable",
+              "View or change a class",
+              "Find a lecturer, course or room in your timetable.",
+            ],
+            [
+              "/planning",
+              "Plan teaching",
+              "Add teaching requirements and preview a schedule.",
+            ],
+            [
+              "/conflicts",
+              "Review conflicts",
+              "Check clashes before approving the timetable.",
+            ],
+          ].map(([href, label, help]) => (
+            <Link
+              key={href}
+              href={href}
+              className="rounded-xl border border-slate-200 bg-white p-4 transition hover:border-teal-500 hover:shadow-sm"
+            >
+              <span className="font-semibold text-teal-800">
+                {label} <span aria-hidden="true">→</span>
+              </span>
+              <span className="mt-2 block text-sm leading-5 text-slate-500">
+                {help}
+              </span>
+            </Link>
+          ))}
+        </div>
+      </section>
+      <details className="mb-6 rounded-2xl border border-slate-200 bg-white p-4">
+        <summary className="cursor-pointer font-semibold">
+          Setting up a new timetable? Start here
+        </summary>
+        <ol className="mt-4 grid list-inside list-decimal gap-3 text-sm sm:grid-cols-2">
+          <li>
+            <Link
+              className="font-semibold text-teal-700 underline"
+              href="/import"
+            >
+              Add your data
+            </Link>
+            <p className="mt-1 text-slate-500">
+              Add courses, people and rooms, or import a file.
+            </p>
+          </li>
+          <li>
+            <Link
+              className="font-semibold text-teal-700 underline"
+              href="/calendar"
+            >
+              Check teaching dates
+            </Link>
+            <p className="mt-1 text-slate-500">
+              Confirm terms, holidays and teaching weeks.
+            </p>
+          </li>
+          <li>
+            <Link
+              className="font-semibold text-teal-700 underline"
+              href="/planning"
+            >
+              Plan the classes
+            </Link>
+            <p className="mt-1 text-slate-500">
+              Add requirements, check availability and preview allocations.
+            </p>
+          </li>
+          <li>
+            <Link
+              className="font-semibold text-teal-700 underline"
+              href="/publication"
+            >
+              Review and publish
+            </Link>
+            <p className="mt-1 text-slate-500">
+              Resolve conflicts and follow the approval process.
+            </p>
+          </li>
+        </ol>
+      </details>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {stats.map(([label, value, href]) => (
           <Link key={label} href={String(href)} className="enterprise-card p-5">

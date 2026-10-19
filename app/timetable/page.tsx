@@ -5,7 +5,7 @@ import { AppShell } from "@/components/app-shell";
 import { useCampusData } from "@/components/data-context";
 import { ScopedChange } from "@/components/scoped-change";
 import { RecordEditor } from "@/components/record-editor";
-import { datePlus, days, monday } from "@/lib/academic";
+import { datePlus, days, monday, campusToday } from "@/lib/academic";
 import { minutes } from "@/lib/constraints";
 import { downloadCsv, timetableRows, downloadIcs } from "@/lib/export";
 import type { Session } from "@/types";
@@ -35,20 +35,91 @@ export default function Timetable() {
   const [selected, setSelected] = useState<Session | null>(null),
     [patch, setPatch] = useState<SeriesPatch>({}),
     [q, setQ] = useState(""),
-    [agenda, setAgenda] = useState(false),
+    [agenda, setAgenda] = useState(true),
+    [lecturer, setLecturer] = useState(""),
+    [course, setCourse] = useState(""),
+    [room, setRoom] = useState(""),
+    [filtersOpen, setFiltersOpen] = useState(false),
     [create, setCreate] = useState(false);
-  const sessions = c.data.sessions.filter((s) =>
-    JSON.stringify([
-      s.moduleCode,
-      s.moduleName,
-      s.lecturer,
-      s.room,
-      s.studentIds,
-      s.course,
-    ])
-      .toLowerCase()
-      .includes(q.toLowerCase()),
+  function courseForSession(session: Session) {
+    const programmeId =
+      c.rawData.series?.find((item) => item.id === session.seriesId)
+        ?.programmeId ||
+      c.rawData.modules.find((item) => item.id === session.moduleId)
+        ?.programmeId;
+    const programme = c.rawData.programmes?.find(
+      (item) => item.id === programmeId,
+    );
+    return {
+      id: programme?.id || session.course,
+      name: programme?.name || session.course,
+    };
+  }
+  const sessions = c.data.sessions
+    .filter((s) => {
+      const text = [
+        s.moduleCode,
+        s.moduleName,
+        s.lecturer,
+        s.room,
+        ...(s.studentIds || []),
+        s.course,
+        courseForSession(s).name,
+      ]
+        .join(" ")
+        .toLowerCase();
+      return (
+        q
+          .trim()
+          .toLowerCase()
+          .split(/\s+/)
+          .every((part) => text.includes(part)) &&
+        (!lecturer || s.staffIds?.includes(lecturer)) &&
+        (!course || courseForSession(s).id === course) &&
+        (!room || s.locationId === room)
+      );
+    })
+    .sort(
+      (a, b) =>
+        (a.date || "").localeCompare(b.date || "") ||
+        a.start.localeCompare(b.start) ||
+        a.moduleName.localeCompare(b.moduleName),
+    );
+  const staffOptions = c.rawData.lecturers.filter((l) => !l.archived);
+  const courseOptions = [
+    ...new Map(
+      [
+        ...(c.rawData.programmes || [])
+          .filter((p) => !p.archived)
+          .map((p) => ({ id: p.id, name: `${p.name} · ${p.campus}` })),
+        ...c.data.sessions
+          .filter(
+            (s) =>
+              !c.rawData.programmes?.some(
+                (p) => p.id === courseForSession(s).id,
+              ),
+          )
+          .map(courseForSession),
+      ]
+        .filter((p) => p.id)
+        .map((p) => [p.id, p]),
+    ).values(),
+  ].sort((a, b) => a.name.localeCompare(b.name));
+  const roomOptions = c.rawData.rooms.filter(
+    (r) =>
+      !r.archived && (c.campus === "All campuses" || r.campus === c.campus),
   );
+  const filtered = Boolean(q || lecturer || course || room);
+  function clearFilters() {
+    setQ("");
+    setLecturer("");
+    setCourse("");
+    setRoom("");
+  }
+  useEffect(() => {
+    setRoom("");
+  }, [c.campus]);
+  const activeConflicts = c.data.conflicts.filter((x) => !x.resolved);
   const columns = days.map((day, i) => ({
     day,
     date: datePlus(monday(c.weekStart), i),
@@ -91,68 +162,232 @@ export default function Timetable() {
     }
     return out;
   }, [sessions, columns]);
+  // Reserve enough width for each overlapping class; the list is the compact default.
+  const gridColumns = `64px ${columns
+    .map((col) => {
+      const lanes = Math.max(
+        1,
+        ...sessions
+          .filter((s) => s.date === col.date)
+          .map((s) => layout.get(s.id)?.count || 1),
+      );
+      return `${Math.max(160, lanes * 145)}px`;
+    })
+    .join(" ")}`;
   return (
     <AppShell
       title="Timetable"
-      subtitle="Dated teaching in each campus’s local time"
+      subtitle="Find a class. Select it to view details or make a change."
     >
-      <div className="mb-5 flex flex-wrap justify-between gap-3">
-        <div className="flex flex-wrap gap-2">
-          <button
-            className="btn-secondary"
-            onClick={() => c.setWeekStart(datePlus(monday(c.weekStart), -7))}
-          >
-            Previous week
-          </button>
-          <button
-            className="btn-secondary"
-            onClick={() => c.setWeekStart(datePlus(monday(c.weekStart), 7))}
-          >
-            Next week
-          </button>
-          <button
-            className="btn-secondary"
-            onClick={() => setAgenda((x) => !x)}
-          >
-            {agenda ? "Calendar" : "Agenda"}
-          </button>
-          <input
-            aria-label="Filter timetable"
-            className="input"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Module, staff, student ID or location"
-          />
-        </div>
-        <div className="flex gap-2">
-          <button
-            className="btn-secondary"
-            onClick={() =>
-              downloadCsv("timetable.csv", timetableRows(sessions))
-            }
-          >
-            CSV
-          </button>
-          <button
-            className="btn-secondary"
-            onClick={() => downloadIcs("timetable.ics", sessions)}
-          >
-            Calendar export
-          </button>
+      <section
+        aria-label="Timetable controls"
+        className="enterprise-card mb-5 p-4"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold">
+              {DateTime.fromISO(monday(c.weekStart)).toFormat("d LLL")} –{" "}
+              {DateTime.fromISO(datePlus(monday(c.weekStart), 6)).toFormat(
+                "d LLL yyyy",
+              )}
+            </h2>
+            <p className="text-xs text-slate-500">
+              Times are shown in each campus’s local time.
+            </p>
+          </div>
           <button
             className="btn-primary"
             disabled={!c.canWrite}
             onClick={() => setCreate(true)}
           >
-            Add teaching
+            Add class
           </button>
         </div>
-      </div>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="btn-secondary"
+              aria-label="Previous week"
+              onClick={() => c.setWeekStart(datePlus(monday(c.weekStart), -7))}
+            >
+              <span aria-hidden="true">←</span>
+              <span className="hidden sm:inline">Previous</span>
+            </button>
+            <button
+              className="btn-secondary"
+              onClick={() =>
+                c.setWeekStart(monday(campusToday(zones[0] || "Europe/London")))
+              }
+            >
+              This week
+            </button>
+            <button
+              className="btn-secondary"
+              aria-label="Next week"
+              onClick={() => c.setWeekStart(datePlus(monday(c.weekStart), 7))}
+            >
+              <span className="hidden sm:inline">Next</span>
+              <span aria-hidden="true">→</span>
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <div
+              role="group"
+              aria-label="Timetable view"
+              className="hidden gap-1 rounded-xl bg-slate-100 p-1 md:flex"
+            >
+              <button
+                className={
+                  agenda
+                    ? "btn-secondary"
+                    : "rounded-lg px-3 text-sm font-semibold text-slate-600"
+                }
+                aria-pressed={agenda}
+                onClick={() => setAgenda(true)}
+              >
+                List
+              </button>
+              <button
+                className={
+                  !agenda
+                    ? "btn-secondary"
+                    : "rounded-lg px-3 text-sm font-semibold text-slate-600"
+                }
+                aria-pressed={!agenda}
+                onClick={() => setAgenda(false)}
+              >
+                Week grid
+              </button>
+            </div>
+            <details className="relative">
+              <summary className="btn-secondary cursor-pointer">Export</summary>
+              <div className="absolute right-0 z-10 mt-2 grid w-52 gap-2 rounded-xl border bg-white p-3 shadow-lg">
+                <button
+                  className="btn-secondary"
+                  onClick={() =>
+                    downloadCsv("timetable.csv", timetableRows(sessions))
+                  }
+                >
+                  Download CSV
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={() => downloadIcs("timetable.ics", sessions)}
+                >
+                  Calendar file (.ics)
+                </button>
+              </div>
+            </details>
+          </div>
+        </div>
+        <div className="mt-4 grid grid-cols-[minmax(0,1fr)_auto] gap-3 xl:grid-cols-4">
+          <label className="grid gap-1 text-xs font-semibold text-slate-600">
+            Search classes
+            <input
+              aria-label="Filter timetable"
+              type="search"
+              className="input w-full"
+              placeholder="Module, name or ID"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+          </label>
+          <button
+            className="btn-secondary self-end xl:hidden"
+            aria-expanded={filtersOpen}
+            aria-controls="timetable-filters"
+            onClick={() => setFiltersOpen((open) => !open)}
+          >
+            Filters
+            {[lecturer, course, room].filter(Boolean).length > 0
+              ? ` (${[lecturer, course, room].filter(Boolean).length})`
+              : ""}
+          </button>
+          <div
+            id="timetable-filters"
+            className={`col-span-full gap-3 sm:grid-cols-3 xl:col-span-3 xl:grid ${filtersOpen ? "grid" : "hidden"}`}
+          >
+            <label className="grid gap-1 text-xs font-semibold text-slate-600">
+              Lecturer
+              <select
+                aria-label="Lecturer"
+                className="input w-full"
+                value={lecturer}
+                onChange={(e) => setLecturer(e.target.value)}
+              >
+                <option value="">All lecturers</option>
+                {staffOptions.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="grid gap-1 text-xs font-semibold text-slate-600">
+              Course
+              <select
+                aria-label="Course"
+                className="input w-full"
+                value={course}
+                onChange={(e) => setCourse(e.target.value)}
+              >
+                <option value="">All courses</option>
+                {courseOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="grid gap-1 text-xs font-semibold text-slate-600">
+              Room
+              <select
+                aria-label="Room"
+                className="input w-full"
+                value={room}
+                onChange={(e) => setRoom(e.target.value)}
+              >
+                <option value="">All rooms</option>
+                {roomOptions.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.room}
+                    {c.campus === "All campuses" ? ` · ${r.campus}` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+          <p role="status" className="text-sm text-slate-500">
+            {sessions.length} of {c.data.sessions.length} classes shown
+            {filtered ? " · Filters applied" : ""}
+          </p>
+          {filtered && (
+            <button
+              type="button"
+              className="min-h-9 text-sm font-semibold text-teal-700"
+              onClick={clearFilters}
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+        {!agenda && (
+          <p className="mt-2 hidden text-xs text-slate-500 md:block">
+            Scroll across to see overlapping classes. Choose List for a compact
+            view.
+          </p>
+        )}
+      </section>
       <div
         className={`${agenda ? "hidden" : "hidden md:block"} enterprise-card overflow-x-auto`}
       >
-        <div className="min-w-[1100px]">
-          <div className="grid grid-cols-[60px_repeat(7,minmax(0,1fr))] border-b">
+        <div className="w-max min-w-full">
+          <div
+            className="grid border-b"
+            style={{ gridTemplateColumns: gridColumns }}
+          >
             <div />
             {columns.map((col) => (
               <div className="border-l px-2 py-3 text-sm" key={col.day}>
@@ -162,8 +397,8 @@ export default function Timetable() {
             ))}
           </div>
           <div
-            className="relative grid grid-cols-[60px_repeat(7,minmax(0,1fr))]"
-            style={{ height: 14 * 80 }}
+            className="relative grid"
+            style={{ height: 14 * 80, gridTemplateColumns: gridColumns }}
           >
             <div className="relative">
               {Array.from({ length: 15 }, (_, i) => (
@@ -193,6 +428,7 @@ export default function Timetable() {
                   const start =
                       420 + Math.round((e.clientY - rect.top) / 20) * 15,
                     end = start + minutes(s.end) - minutes(s.start);
+                  if (start < 0 || end >= 24 * 60) return;
                   const fmt = (m: number) =>
                     `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
                   edit(s, {
@@ -223,7 +459,7 @@ export default function Timetable() {
                   .filter((s) => s.date === col.date)
                   .map((s) => {
                     const lane = layout.get(s.id)!;
-                    const bad = c.data.conflicts.some((x) =>
+                    const bad = activeConflicts.some((x) =>
                       x.occurrenceIds?.includes(s.id),
                     );
                     return (
@@ -244,13 +480,13 @@ export default function Timetable() {
                           left: `${(lane.lane / lane.count) * 100}%`,
                           width: `${100 / lane.count}%`,
                         }}
-                        title={`${s.moduleName}, ${s.date} ${s.start}-${s.end}, ${s.timeZone}, ${s.room}, ${s.lecturer}`}
+                        title={`${s.moduleName || s.moduleCode || "Untitled class"}, ${s.date} ${s.start}-${s.end}, ${s.timeZone}, ${s.room}, ${s.lecturer}`}
                       >
                         <strong className="block">
                           {s.start}-{s.end}
                         </strong>
                         <span className="block font-semibold">
-                          {s.moduleName}
+                          {s.moduleName || s.moduleCode || "Untitled class"}
                         </span>
                         <span>{s.room}</span>
                         <span className="block">{s.lecturer}</span>
@@ -267,32 +503,101 @@ export default function Timetable() {
           </div>
         </div>
       </div>
-      <div className={`${agenda ? "" : "md:hidden"} space-y-3`}>
-        {sessions.map((s) => (
-          <button
-            className="enterprise-card block w-full p-4 text-left"
-            key={s.id}
-            onClick={() => edit(s)}
-          >
-            <div className="flex justify-between">
-              <strong>{s.moduleName}</strong>
-              <span className="badge bg-teal-50 text-teal-800">
-                {s.variantId ? "Changed" : "Base"}
-              </span>
-            </div>
-            <p className="mt-2 text-sm">
-              {s.day} {s.date} · {s.start}-{s.end} {s.timeZone}
-            </p>
-            <p className="text-sm text-slate-500">
-              {s.room} · {s.lecturer} · {s.campus} · Week {s.teachingWeek}
-            </p>
-          </button>
-        ))}
+      <div className={`${agenda ? "" : "md:hidden"} space-y-6`}>
+        {columns.map((col) => {
+          const daySessions = sessions.filter((s) => s.date === col.date);
+          if (!daySessions.length) return null;
+          return (
+            <section key={col.date} aria-label={col.day}>
+              <div className="mb-3 flex items-center gap-3">
+                <h2 className="font-bold">
+                  {DateTime.fromISO(col.date).toFormat("cccc, d LLL")}
+                </h2>
+                <span className="text-xs text-slate-500">
+                  {daySessions.length}{" "}
+                  {daySessions.length === 1 ? "class" : "classes"}
+                </span>
+              </div>
+              <div className="space-y-2">
+                {daySessions.map((s) => {
+                  const needsReview = activeConflicts.some((x) =>
+                    x.occurrenceIds?.includes(s.id),
+                  );
+                  return (
+                    <button
+                      key={s.id}
+                      className="enterprise-card grid w-full gap-3 p-4 text-left transition hover:border-teal-400 hover:shadow-sm sm:grid-cols-[96px_minmax(0,1fr)_auto]"
+                      onClick={() => edit(s)}
+                    >
+                      <span className="text-sm font-bold text-slate-700">
+                        {s.start}-{s.end}
+                        <span className="mt-1 block text-xs font-normal text-slate-500">
+                          {s.timeZone}
+                        </span>
+                      </span>
+                      <span className="min-w-0">
+                        <strong className="block text-base">
+                          {s.moduleName || s.moduleCode || "Untitled class"}
+                        </strong>
+                        <span className="mt-1 block text-sm text-slate-600">
+                          {s.room} · {s.lecturer}
+                        </span>
+                        <span className="mt-1 block text-xs text-slate-500">
+                          {[
+                            courseForSession(s).name,
+                            s.campus,
+                            `Week ${s.teachingWeek}`,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </span>
+                      </span>
+                      <span className="flex flex-wrap items-start gap-2 sm:justify-end">
+                        {needsReview && (
+                          <span className="badge bg-rose-50 text-rose-800">
+                            Needs review
+                          </span>
+                        )}
+                        {s.variantId && (
+                          <span className="badge bg-amber-50 text-amber-800">
+                            Changed
+                          </span>
+                        )}
+                        {s.status === "Cancelled" && (
+                          <span className="badge bg-slate-100 text-slate-600">
+                            Cancelled
+                          </span>
+                        )}
+                        <span className="self-center text-sm font-semibold text-teal-700">
+                          View <span aria-hidden="true">→</span>
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          );
+        })}
       </div>
       {!sessions.length && (
-        <p className="enterprise-card mt-3 p-10 text-center text-slate-500">
-          No teaching matches this week and these filters.
-        </p>
+        <div className="enterprise-card mt-3 p-8 text-center">
+          <h2 className="font-bold">
+            {filtered
+              ? "No classes match these filters"
+              : "No classes this week"}
+          </h2>
+          <p className="mt-2 text-sm text-slate-500">
+            {filtered
+              ? "Try another lecturer, course or room, or clear the filters."
+              : "Choose another week or add a class to get started."}
+          </p>
+          {filtered && (
+            <button className="btn-secondary mt-4" onClick={clearFilters}>
+              Show all classes
+            </button>
+          )}
+        </div>
       )}
       {selected && (
         <ScopedChange

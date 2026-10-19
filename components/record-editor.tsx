@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useCampusData } from "./data-context";
 import { Field, FormError, Modal } from "./modal";
+import { MultiSelect } from "./multi-select";
 import type { EntityName } from "@/types/scheduling";
 import { days, parseWeeks, campusToday } from "@/lib/academic";
 import { assertRecord } from "@/lib/validation";
@@ -17,7 +18,7 @@ export const entityLabels: Record<EntityName, string> = {
   academicYears: "Academic year",
   terms: "Term",
   teachingWeeks: "Teaching week",
-  series: "Series",
+  series: "Class",
   variants: "Change",
   availabilityRules: "Weekly availability",
   travelRules: "Campus travel",
@@ -126,69 +127,72 @@ export function RecordEditor({
     label: string,
     options: { id: string; name: string }[],
     multi = false,
-  ) => (
-    <Field label={label}>
-      <select
-        className="input w-full"
-        required={
-          !multi &&
-          key !== "activityTemplateId" &&
-          key !== "termId" &&
-          key !== "lecturerId"
-        }
-        multiple={multi}
-        value={value[key] ?? (multi ? [] : "")}
-        onChange={(e) => {
-          const next = multi
-            ? Array.from(e.target.selectedOptions).map((o) => o.value)
-            : e.target.value;
-          set(key, next);
-          if (key === "campus")
-            setValue((v: any) => ({
-              ...v,
-              campus: next,
-              programmeId: "",
-              moduleId: "",
-              studentIds: [],
-            }));
-          if (key === "moduleId") {
-            const m = d.modules.find((m) => m.id === next);
-            if (m)
+  ) =>
+    multi ? (
+      <MultiSelect
+        label={label}
+        options={options}
+        value={value[key] || []}
+        onChange={(next) => set(key, next)}
+      />
+    ) : (
+      <Field label={label}>
+        <select
+          className="input w-full"
+          required={
+            !multi &&
+            key !== "activityTemplateId" &&
+            key !== "termId" &&
+            key !== "lecturerId"
+          }
+          multiple={multi}
+          value={value[key] ?? (multi ? [] : "")}
+          onChange={(e) => {
+            const next = multi
+              ? Array.from(e.target.selectedOptions).map((o) => o.value)
+              : e.target.value;
+            set(key, next);
+            if (key === "campus")
               setValue((v: any) => ({
                 ...v,
-                moduleId: m.id,
-                moduleCode: m.code,
-                moduleName: m.name,
-                campus: m.campus,
-                programme: m.course,
-                programmeId: m.programmeId,
-                roomSuitability: m.roomTypeRequired || "Workshop",
+                campus: next,
+                programmeId: "",
+                moduleId: "",
                 studentIds: [],
               }));
-          }
-          if (key === "programmeId")
-            setValue((v: any) => ({
-              ...v,
-              programmeId: next,
-              programme: d.programmes?.find((p) => p.id === next)?.name || "",
-              moduleCodes: [],
-            }));
-        }}
-      >
-        {!multi && <option value="">Choose</option>}
-        {options.map((o) => (
-          <option key={o.id} value={o.id}>
-            {o.name}
-          </option>
-        ))}
-      </select>
-      {multi && (
-        <span className="text-xs font-normal text-slate-500">
-          Select one or more. Use Ctrl or ⌘ to select multiple entries.
-        </span>
-      )}
-    </Field>
-  );
+            if (key === "moduleId") {
+              const m = d.modules.find((m) => m.id === next);
+              if (m)
+                setValue((v: any) => ({
+                  ...v,
+                  moduleId: m.id,
+                  moduleCode: m.code,
+                  moduleName: m.name,
+                  campus: m.campus,
+                  programme: m.course,
+                  programmeId: m.programmeId,
+                  roomSuitability: m.roomTypeRequired || "Workshop",
+                  studentIds: [],
+                }));
+            }
+            if (key === "programmeId")
+              setValue((v: any) => ({
+                ...v,
+                programmeId: next,
+                programme: d.programmes?.find((p) => p.id === next)?.name || "",
+                moduleCodes: [],
+              }));
+          }}
+        >
+          {!multi && <option value="">Choose</option>}
+          {options.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.name}
+            </option>
+          ))}
+        </select>
+      </Field>
+    );
   const campuses = (d.campuses || [])
     .filter((r) => !r.archived)
     .map((r) => ({ id: r.name, name: r.name }));
@@ -207,6 +211,32 @@ export function RecordEditor({
       "Academic year",
       (d.academicYears || []).filter((y) => !y.archived),
     );
+  const weekField = () => (
+    <MultiSelect
+      label="Teaching weeks"
+      options={(d.teachingWeeks || [])
+        .filter(
+          (w) =>
+            w.academicYearId === value.academicYearId &&
+            w.isTeachingWeek &&
+            !w.archived,
+        )
+        .sort((a, b) => a.weekNumber - b.weekNumber)
+        .map((w) => ({
+          id: String(w.weekNumber),
+          name: `Week ${w.weekNumber} · ${w.startDate}`,
+        }))}
+      value={parseWeeks(weeks).map(String)}
+      onChange={(next) =>
+        setWeeks(
+          next
+            .map(Number)
+            .sort((a, b) => a - b)
+            .join(", "),
+        )
+      }
+    />
+  );
   const dateFields = () => (
     <>
       {input("startDate", "Start date", "date")}
@@ -312,6 +342,12 @@ export function RecordEditor({
       busy={busy}
     >
       <form onSubmit={submit}>
+        {entity === "series" && (
+          <p className="mb-5 text-sm text-slate-500">
+            Set up the class below. Select people and weeks by ticking their
+            names.
+          </p>
+        )}
         <div className="grid gap-4 sm:grid-cols-2">
           {entity === "rooms" && (
             <>
@@ -427,27 +463,7 @@ export function RecordEditor({
               {input("plannedSize", "Planned size", "number")}
               {input("durationHours", "Duration in hours", "number")}
               {input("weeklySessions", "Sessions per week", "number")}
-              <Field label="Teaching weeks">
-                <input
-                  required
-                  className="input"
-                  placeholder="1-6, 8-12"
-                  value={weeks}
-                  onChange={(e) => setWeeks(e.target.value)}
-                />
-                <span className="text-xs">
-                  Available:{" "}
-                  {d.teachingWeeks
-                    ?.filter(
-                      (w) =>
-                        w.academicYearId === value.academicYearId &&
-                        w.isTeachingWeek &&
-                        !w.archived,
-                    )
-                    .map((w) => w.weekNumber)
-                    .join(", ")}
-                </span>
-              </Field>
+              {weekField()}
               {studentField()}
               {input("roomSuitability", "Location suitability")}
               {input("lecturerSuitability", "Staff suitability", "text", false)}
@@ -466,67 +482,92 @@ export function RecordEditor({
           )}
           {entity === "series" && (
             <>
-              {campus()}
-              {select(
-                "moduleId",
-                "Module",
-                d.modules
-                  .filter((m) => !m.archived && m.campus === value.campus)
-                  .map((m) => ({ id: m.id!, name: `${m.code} · ${m.name}` })),
-              )}
-              {select(
-                "status",
-                "Status",
-                ["Scheduled", "Draft", "Cancelled"].map((id) => ({
-                  id,
-                  name: id,
-                })),
-              )}
-              {select(
-                "activityTemplateId",
-                "Planned activity",
-                (d.templates || [])
-                  .filter((t) => !t.archived && t.moduleId === value.moduleId)
-                  .map((t) => ({ id: t.id, name: t.name })),
-              )}
-              {yearField()}
-              {dateFields()}
-              {select(
-                "dayOfWeek",
-                "Day",
-                days.map((name, i) => ({ id: String(i + 1), name })),
-              )}
-              {input("startLocalTime", "Start time", "time")}
-              {input("endLocalTime", "End time", "time")}
-              {select(
-                "locationId",
-                "Location",
-                d.rooms
-                  .filter((r) => !r.archived && r.campus === value.campus)
-                  .map((r) => ({
-                    id: r.id!,
-                    name: `${r.room} · ${r.capacity} seats`,
-                  })),
-              )}
-              {select(
-                "staffIds",
-                "Staff",
-                d.lecturers
-                  .filter((l) => !l.archived)
-                  .map((l) => ({ id: l.id!, name: l.name })),
-                true,
-              )}
-              {studentField()}
-              {input("plannedSize", "Planned size", "number")}
-              <Field label="Teaching weeks">
-                <input
-                  className="input"
-                  required
-                  value={weeks}
-                  onChange={(e) => setWeeks(e.target.value)}
-                  placeholder="1-6, 8-12"
-                />
-              </Field>
+              <fieldset className="col-span-full rounded-xl border border-slate-200 p-4">
+                <legend className="px-2 font-semibold">Class details</legend>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {campus()}
+                  {select(
+                    "moduleId",
+                    "Module",
+                    d.modules
+                      .filter((m) => !m.archived && m.campus === value.campus)
+                      .map((m) => ({
+                        id: m.id!,
+                        name: `${m.code} · ${m.name}`,
+                      })),
+                  )}
+                </div>
+              </fieldset>
+              <fieldset className="col-span-full rounded-xl border border-slate-200 p-4">
+                <legend className="px-2 font-semibold">
+                  When does it happen?
+                </legend>
+                <p className="mb-4 text-sm text-slate-500">
+                  Choose the day, times and teaching weeks. Dates limit when
+                  this class can repeat.
+                </p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {yearField()}
+                  {dateFields()}
+                  {select(
+                    "dayOfWeek",
+                    "Day",
+                    days.map((name, i) => ({ id: String(i + 1), name })),
+                  )}
+                  {input("startLocalTime", "Start time", "time")}
+                  {input("endLocalTime", "End time", "time")}
+                  {weekField()}
+                </div>
+              </fieldset>
+              <fieldset className="col-span-full rounded-xl border border-slate-200 p-4">
+                <legend className="px-2 font-semibold">Room and people</legend>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {select(
+                    "locationId",
+                    "Location",
+                    d.rooms
+                      .filter((r) => !r.archived && r.campus === value.campus)
+                      .map((r) => ({
+                        id: r.id!,
+                        name: `${r.room} · ${r.capacity} seats`,
+                      })),
+                  )}
+                  {select(
+                    "staffIds",
+                    "Staff",
+                    d.lecturers
+                      .filter((l) => !l.archived)
+                      .map((l) => ({ id: l.id!, name: l.name })),
+                    true,
+                  )}
+                  {studentField()}
+                  {input("plannedSize", "Planned size", "number")}
+                </div>
+              </fieldset>
+              <details className="col-span-full rounded-xl border border-slate-200 p-4">
+                <summary className="cursor-pointer text-sm font-semibold">
+                  More options
+                </summary>
+                <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                  {select(
+                    "status",
+                    "Status",
+                    ["Scheduled", "Draft", "Cancelled"].map((id) => ({
+                      id,
+                      name: id,
+                    })),
+                  )}
+                  {select(
+                    "activityTemplateId",
+                    "Planned activity",
+                    (d.templates || [])
+                      .filter(
+                        (t) => !t.archived && t.moduleId === value.moduleId,
+                      )
+                      .map((t) => ({ id: t.id, name: t.name })),
+                  )}
+                </div>
+              </details>
             </>
           )}
           {entity === "campuses" && (
@@ -714,13 +755,27 @@ export function RecordEditor({
           )}
         </div>
         <FormError message={error} />
-        <div className="mt-6 flex justify-end">
+        <div className="sticky bottom-0 mt-6 flex justify-end gap-2 border-t bg-white py-4">
+          <button
+            className="btn-secondary"
+            type="button"
+            disabled={busy}
+            onClick={onClose}
+          >
+            Cancel
+          </button>
           <button
             className="btn-primary"
             disabled={busy || !c.canWrite}
             type="submit"
           >
-            {busy ? "Saving…" : "Save changes"}
+            {busy
+              ? "Saving…"
+              : entity === "series"
+                ? record?.id
+                  ? "Save class"
+                  : "Add class"
+                : "Save changes"}
           </button>
         </div>
       </form>

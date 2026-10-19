@@ -97,11 +97,33 @@ await context.route("https://backend.test/**", async (r) => {
 const base = "http://127.0.0.1:8765/campus-timetable-intelligence";
 await page.goto(base + "/timetable/?week=2026-10-26");
 await page.getByText("Shared data connected", { exact: true }).waitFor();
+// Visible filters compose, and empty states offer a direct recovery.
+await page.getByLabel("Lecturer", { exact: true }).selectOption("L2");
+await page
+  .getByRole("heading", { name: "No classes match these filters" })
+  .waitFor();
+await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+await page.getByLabel("Lecturer", { exact: true }).selectOption("L1");
+await page.getByLabel("Course", { exact: true }).selectOption("P1");
+await page.getByLabel("Room", { exact: true }).selectOption("R1");
+await page.getByRole("button", { name: /09:00-11:00/ }).waitFor();
+await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+await page.getByRole("button", { name: "Week grid", exact: true }).click();
+await page.getByRole("button", { name: /09:00-11:00/ }).waitFor();
+await page.getByRole("button", { name: "List", exact: true }).click();
 await page.getByRole("button", { name: /09:00-11:00/ }).click();
 await page.getByLabel("Start", { exact: true }).fill("13:00");
 await page.getByLabel("End", { exact: true }).fill("15:00");
+// People selections survive searching and can be toggled without modifier keys.
+await page.getByLabel("Search staff", { exact: true }).fill("Blair");
+await page.getByRole("checkbox", { name: "Blair", exact: true }).check();
+await page.getByLabel("Search staff", { exact: true }).fill("");
+assert(
+  await page.getByRole("checkbox", { name: "Alex", exact: true }).isChecked(),
+);
+await page.getByRole("checkbox", { name: "Blair", exact: true }).uncheck();
 await page.getByLabel("Reason", { exact: true }).fill("Week six move");
-await page.getByRole("button", { name: "Save scoped change" }).click();
+await page.getByRole("button", { name: "Save class change" }).click();
 await page.getByRole("dialog").waitFor({ state: "hidden" });
 assert.equal(data.variants.length, 1);
 assert.equal(data.variants[0].scope, "single_occurrence");
@@ -109,6 +131,36 @@ await page.screenshot({
   path: ".cache/cti-timetable-desktop.png",
   fullPage: true,
 });
+// The class form retains the existing model while making teaching weeks selectable.
+await page.getByRole("button", { name: "Add class", exact: true }).click();
+await page.getByRole("dialog", { name: "Add class" }).waitFor();
+await page.getByLabel("Module", { exact: true }).selectOption("M1");
+await page.getByLabel("Day", { exact: true }).selectOption("2");
+await page.getByLabel("Location", { exact: true }).selectOption("R2");
+await page.getByRole("checkbox", { name: "Blair", exact: true }).check();
+await page
+  .getByRole("checkbox", { name: "Student One · U1", exact: true })
+  .check();
+await page
+  .getByRole("checkbox", { name: "Week 6 · 2026-10-26", exact: true })
+  .check();
+await page
+  .getByRole("dialog")
+  .screenshot({ path: ".cache/cti-class-form.png" });
+await page
+  .getByRole("dialog")
+  .getByRole("button", { name: "Add class", exact: true })
+  .click();
+await page.getByRole("dialog").waitFor({ state: "hidden" });
+assert(
+  data.series.some(
+    (s) =>
+      s.staffIds.includes("L2") &&
+      s.dayOfWeek === 2 &&
+      s.teachingWeeks.length === 1 &&
+      s.teachingWeeks[0] === 6,
+  ),
+);
 await page.goto(base + "/changes/?week=2026-10-26");
 await page.getByText("Shared data connected", { exact: true }).waitFor();
 await page.getByRole("button", { name: "Revert change", exact: true }).click();
@@ -140,6 +192,13 @@ await page.keyboard.press("Escape");
 await page.setViewportSize({ width: 390, height: 844 });
 await page.goto(base + "/timetable/?week=2026-10-26");
 await page.getByText("Shared data connected", { exact: true }).waitFor();
+assert(await page.getByLabel("Lecturer", { exact: true }).isHidden());
+await page.getByRole("button", { name: "Filters", exact: true }).click();
+await page.getByLabel("Lecturer", { exact: true }).selectOption("L2");
+await page.getByRole("button", { name: "Filters (1)", exact: true }).click();
+assert(await page.getByLabel("Lecturer", { exact: true }).isHidden());
+await page.getByText("1 of 2 classes shown · Filters applied").waitFor();
+await page.getByRole("button", { name: "Clear filters", exact: true }).click();
 await page.screenshot({
   path: ".cache/cti-timetable-mobile.png",
   fullPage: true,
@@ -195,6 +254,6 @@ assert(
 );
 assert.equal(errors.length, 0, errors.join("\n"));
 console.log(
-  "Browser flows passed: scoped edit, revert, master create, failed form retention, mobile navigation, routes and offline controls.",
+  "Browser flows passed: timetable filters and views, checkbox selections, class creation, scoped edit, revert, failed form retention, mobile navigation, routes and offline controls.",
 );
 await browser.close();

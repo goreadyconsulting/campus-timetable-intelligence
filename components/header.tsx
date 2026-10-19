@@ -101,7 +101,7 @@ export function Header({
               ))}
           </select>
         </Field>
-        <Field label="Week containing">
+        <Field label="Week of">
           <input
             className="input"
             type="date"
@@ -118,7 +118,7 @@ export function Header({
           }
           onClick={() => void c.refresh().catch(() => {})}
         >
-          Refresh shared data
+          Refresh
         </button>
       </div>
       {c.error && (
@@ -146,11 +146,25 @@ export function Header({
       )}
       {menu && (
         <Modal title="Navigation" onClose={() => setMenu(false)}>
-          <nav className="grid grid-cols-2 gap-2">
-            {links.map((l) => (
-              <Link className="btn-secondary" key={l.href} href={l.href}>
-                {l.label}
-              </Link>
+          <nav aria-label="Mobile navigation" className="space-y-5">
+            {sections.map((section) => (
+              <section key={section.label}>
+                <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
+                  {section.label}
+                </h3>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {section.items.map((l) => (
+                    <Link
+                      className="btn-secondary justify-start"
+                      key={l.href}
+                      href={l.href}
+                      onClick={() => setMenu(false)}
+                    >
+                      {l.label}
+                    </Link>
+                  ))}
+                </div>
+              </section>
             ))}
           </nav>
         </Modal>

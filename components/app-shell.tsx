@@ -16,7 +16,7 @@ export function AppShell({
       <Sidebar />
       <main className="lg:pl-72">
         <Header title={title} subtitle={subtitle} />
-        <div className="p-6 lg:p-8">{children}</div>
+        <div className="p-4 sm:p-6 lg:p-8">{children}</div>
       </main>
       <HelpAssistant />
     </div>

@@ -8,6 +8,7 @@ import type {
 } from "@/types/scheduling";
 import { useCampusData } from "./data-context";
 import { Modal, Field, FormError } from "./modal";
+import { MultiSelect } from "./multi-select";
 import { days, parseWeeks } from "@/lib/academic";
 import { assertRecord } from "@/lib/validation";
 import { variantDates, baseDates, resolveOccurrences } from "@/lib/recurrence";
@@ -168,16 +169,14 @@ export function ScopedChange({
               value={scope}
               onChange={(e) => setScope(e.target.value as any)}
             >
-              <option value="single_occurrence">This occurrence only</option>
-              <option value="week_set">
-                This teaching week or selected weeks
-              </option>
+              <option value="single_occurrence">Only this class</option>
+              <option value="week_set">Selected teaching weeks</option>
               <option value="date_range">Date range</option>
               <option value="this_and_following">
-                This and following occurrences
+                This class and future weeks
               </option>
               {!existing && (
-                <option value="entire_series">Entire series</option>
+                <option value="entire_series">All weeks of this class</option>
               )}
             </select>
           </Field>
@@ -187,8 +186,8 @@ export function ScopedChange({
               value={operation}
               onChange={(e) => setOperation(e.target.value as any)}
             >
-              <option value="override">Change allocation</option>
-              <option value="cancel">Cancel teaching</option>
+              <option value="override">Change time, room or people</option>
+              <option value="cancel">Cancel class</option>
               {scope !== "entire_series" && (
                 <option value="additional_session">Add an extra session</option>
               )}
@@ -271,50 +270,24 @@ export function ScopedChange({
                   onChange={(e) => set("endLocalTime", e.target.value)}
                 />
               </Field>
-              <Field label="Staff">
-                <select
-                  multiple
-                  className="input"
-                  value={patch.staffIds}
-                  onChange={(e) =>
-                    set(
-                      "staffIds",
-                      Array.from(e.target.selectedOptions).map((o) => o.value),
-                    )
-                  }
-                >
-                  {d.lecturers
-                    .filter((l) => !l.archived)
-                    .map((l) => (
-                      <option key={l.id} value={l.id}>
-                        {l.name}
-                      </option>
-                    ))}
-                </select>
-              </Field>
-              <Field label="Individual students">
-                <select
-                  multiple
-                  className="input"
-                  value={patch.studentIds}
-                  onChange={(e) =>
-                    set(
-                      "studentIds",
-                      Array.from(e.target.selectedOptions).map((o) => o.value),
-                    )
-                  }
-                >
-                  {d.students
-                    ?.filter(
-                      (st) => !st.archived && st.campus === occurrence.campus,
-                    )
-                    .map((st) => (
-                      <option key={st.id} value={st.id}>
-                        {st.name}
-                      </option>
-                    ))}
-                </select>
-              </Field>
+              <MultiSelect
+                label="Staff"
+                options={d.lecturers
+                  .filter((l) => !l.archived)
+                  .map((l) => ({ id: l.id!, name: l.name }))}
+                value={patch.staffIds || []}
+                onChange={(next) => set("staffIds", next)}
+              />
+              <MultiSelect
+                label="Individual students"
+                options={(d.students || [])
+                  .filter(
+                    (st) => !st.archived && st.campus === occurrence.campus,
+                  )
+                  .map((st) => ({ id: st.id, name: `${st.name} · ${st.id}` }))}
+                value={patch.studentIds || []}
+                onChange={(next) => set("studentIds", next)}
+              />
             </>
           )}
           <div className="col-span-full">
@@ -330,8 +303,8 @@ export function ScopedChange({
         </div>
         <div className="mt-4 rounded-xl bg-slate-50 p-4">
           <p className="font-semibold">
-            {preview.dates.length} affected occurrence
-            {preview.dates.length === 1 ? "" : "s"}
+            {preview.dates.length}{" "}
+            {preview.dates.length === 1 ? "class" : "classes"} affected
           </p>
           <p className="text-sm text-slate-600">
             Teaching weeks{" "}
@@ -341,14 +314,15 @@ export function ScopedChange({
           </p>
           {scope === "entire_series" && (
             <p className="mt-2 text-sm">
-              Existing dated overrides retain their precedence over the base
-              series.
+              Individual changes already made to specific dates still take
+              priority.
             </p>
           )}
           <p className="mt-2 text-sm">
             {preview.newConflicts.length} new conflicts;{" "}
-            {preview.conflicts.length} conflicts affect the resulting series.
-            Draft changes can be saved; hard conflicts block publication.
+            {preview.conflicts.length} conflicts affect this class across its
+            teaching weeks. Draft changes can be saved; hard conflicts block
+            publication.
           </p>
           {preview.newConflicts.slice(0, 8).map((x) => (
             <p className="mt-1 text-sm text-red-800" key={x.id}>
@@ -363,7 +337,7 @@ export function ScopedChange({
             className="btn-primary"
             disabled={busy || !c.canWrite || !!preview.error}
           >
-            {busy ? "Saving…" : "Save scoped change"}
+            {busy ? "Saving…" : "Save class change"}
           </button>
         </div>
       </form>

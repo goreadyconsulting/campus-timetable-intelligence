@@ -35,13 +35,13 @@ textarea {
   @apply inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold;
 }
 .input {
-  @apply h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none ring-tealBrand/20 transition focus:ring-4;
+  @apply h-11 min-w-0 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none ring-tealBrand/20 transition focus:ring-4;
 }
 .btn-primary {
-  @apply inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-tealBrand px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-600;
+  @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-tealBrand px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-600;
 }
 .btn-secondary {
-  @apply inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50;
+  @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50;
 }
 button:disabled {
   opacity: 0.45;
