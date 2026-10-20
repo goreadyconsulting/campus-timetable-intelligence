@@ -23,11 +23,13 @@ import {
   loadRemoteData,
   requestBackend,
   readBackend,
+  confirmedCacheKey,
   type RuntimeConfig,
 } from "@/lib/backend";
 import { migrateData, resolveOccurrences } from "@/lib/recurrence";
 import { detectOccurrenceConflicts } from "@/lib/constraints";
 import { campusToday, datePlus, monday } from "@/lib/academic";
+import { applyRemotePatch } from "@/lib/supabase-service";
 
 export type BackendStatus =
   | "Local"
@@ -35,7 +37,6 @@ export type BackendStatus =
   | "Connected"
   | "Syncing"
   | "Unavailable";
-const CACHE = "cti-confirmed-cache-v5";
 const SCOPE = "cti-timetable-scope";
 function useDataValue() {
   const [rawData, setData] = useState<AppData>(() =>
@@ -50,6 +51,14 @@ function useDataValue() {
   const [backendStatus, setStatus] = useState<BackendStatus>("Connecting");
   const [error, setError] = useState("");
   const busy = useRef(false);
+  const confirmed = useRef<AppData | null>(null);
+  function acceptData(next: AppData, config = backendConfig) {
+    confirmed.current = next;
+    setData(next);
+    try {
+      localStorage.setItem(confirmedCacheKey(config), JSON.stringify(next));
+    } catch {}
+  }
   const [campus, setCampus] = useState("All campuses"),
     [academicYearId, setAcademicYearId] = useState("AY-2026"),
     [weekStart, setWeekStart] = useState(monday(campusToday()));
@@ -58,9 +67,8 @@ function useDataValue() {
   async function refresh(config = backendConfig) {
     setStatus("Connecting");
     try {
-      const next = await loadRemoteData(config);
-      setData(next);
-      localStorage.setItem(CACHE, JSON.stringify(next));
+      const next = await loadRemoteData(config, confirmed.current);
+      acceptData(next, config);
       setStatus("Connected");
       setError("");
       return next;
@@ -72,16 +80,20 @@ function useDataValue() {
   }
   useEffect(() => {
     let active = true;
-    try {
-      const cached = localStorage.getItem(CACHE);
-      if (cached) {
-        const value = JSON.parse(cached);
-        if (value.schemaVersion === "5.0.0") setData(value);
-      }
-    } catch {}
     void getRuntimeConfig().then(async (config) => {
       if (!active) return;
       setConfig(config);
+      try {
+        const value = JSON.parse(
+          localStorage.getItem(confirmedCacheKey(config)) || "null",
+        );
+        if (
+          value?.schemaVersion === "5.0.0" &&
+          Array.isArray(value.series) &&
+          Number.isInteger(value.dataRevision)
+        )
+          acceptData(value, config);
+      } catch {}
       try {
         await refresh(config);
       } catch {}
@@ -159,7 +171,14 @@ function useDataValue() {
     try {
       const result = await requestBackend(backendConfig, body);
       try {
-        await refresh();
+        const next =
+          confirmed.current &&
+          applyRemotePatch(confirmed.current, result.patch);
+        if (next) {
+          acceptData(next);
+          setStatus("Connected");
+          setError("");
+        } else await refresh();
         setNotice("Saved to shared data.");
       } catch {
         setNotice(

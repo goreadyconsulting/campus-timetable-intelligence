@@ -43,6 +43,8 @@ jobs:
         run: |
           npm run build:backend
           git diff --exit-code -- apps-script/Domain.gs
+          npm run build:supabase
+          git diff --exit-code -- supabase/functions/cti-api/bundle.js
           npm test
           npm run typecheck
 

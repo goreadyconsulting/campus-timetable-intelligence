@@ -1,6 +1,6 @@
 # Campus Timetable Intelligence
 
-Campus-aware teaching planning with dated recurrence, scoped changes, shared Google Sheets persistence and immutable timetable publications.
+Campus-aware teaching planning with dated recurrence, scoped changes, shared Supabase persistence and immutable timetable publications.
 
 Application: https://goreadyconsulting.github.io/campus-timetable-intelligence/
 
@@ -30,19 +30,19 @@ The initial 2026/27 calendar is a configurable starter calendar. Confirm institu
 
 ## Shared writes
 
-`apps-script/Code.gs` implements the service and spreadsheet adapter. `apps-script/Domain.gs` is generated from the same TypeScript domain used by the frontend.
+Supabase project `agcmyvzfjersvwoqwkkc` stores the timetable. `supabase/schema.sql` defines its tables and transactional RPCs. `supabase/functions/cti-api/index.ts` validates changes using the same TypeScript scheduling domain as the frontend; `npm run build:supabase` generates the deployed bundle.
 
-Writes use per-record revisions, a global data revision, server-generated IDs, a script lock and stable request IDs. A prepared journal is written before changing records. Interrupted prepared requests roll forward under the lock; completed receipts deduplicate retries. The client retains unconfirmed request IDs through reloads, polls receipts and never treats an opaque response as a successful save.
+Writes use per-record revisions, a global data revision, server-generated IDs and stable request IDs. PostgreSQL commits records, audits, publications and the receipt in one transaction. Completed receipts deduplicate retries; different payloads cannot reuse an ID. A successful save returns the changed records, so the client updates its confirmed cache without downloading the full dataset again. Reads do not take the write lock. Cached startup checks the shared revision and reuses the confirmed data when it has not changed.
 
 Public whole-dataset save/reset routes are removed. Master records are archived with dependency checks. Audit entries include before/after values and request IDs. Empty shared arrays remain empty.
 
-Publication follows Draft → In Review → Approved → Published. Review changes advance the shared revision. Data edits invalidate approval. Publication validates its selected year, date range and campuses, checks all overlapping resources including other campuses, and stores a chunked immutable snapshot. Exports from publication history use the saved snapshot.
+Publication follows Draft → In Review → Approved → Published. Review changes advance the shared revision. Data edits invalidate approval. Publication validates its selected year, date range and campuses, checks all overlapping resources including other campuses, and stores an immutable snapshot. Exports from publication history use the saved snapshot.
 
 ## Deployment
 
 A push to `main` runs regression tests, checks the generated backend bundle, builds the static export and deploys GitHub Pages. Dependencies are pinned in `package-lock.json`.
 
-**Apps Script deployment is separate from GitHub Pages.** Follow [the backend deployment instructions](docs/backend-deployment.md) to install both script files, migrate the existing workbook and redeploy the web app. A frontend push alone does not update Apps Script.
+**Supabase deployment is separate from GitHub Pages.** Follow [the Supabase deployment instructions](docs/supabase-deployment.md). The Apps Script adapter and [legacy workbook deployment instructions](docs/backend-deployment.md) remain available for rollback; the live frontend selects Supabase in `public/runtime-config.json`.
 
 ## Validation
 

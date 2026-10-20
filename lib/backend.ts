@@ -9,6 +9,9 @@ import type {
 export type RuntimeConfig = {
   backendEnabled: boolean;
   appsScriptUrl: string;
+  backendProvider?: "apps-script" | "supabase";
+  supabaseUrl?: string;
+  supabasePublishableKey?: string;
   geminiEnabled: boolean;
   dataMode: "training" | "live" | "shared" | string;
 };
@@ -31,6 +34,15 @@ const defaultConfig: RuntimeConfig = {
 const READ_TIMEOUT_MS = 60000;
 const WRITE_TIMEOUT_MS = 60000;
 
+export function backendEndpoint(config: RuntimeConfig) {
+  return config.backendProvider === "supabase"
+    ? `${config.supabaseUrl || ""}/functions/v1/cti-api`
+    : config.appsScriptUrl;
+}
+export function confirmedCacheKey(config: RuntimeConfig) {
+  return `cti-confirmed-cache-v6:${backendEndpoint(config)}`;
+}
+
 export async function getRuntimeConfig(): Promise<RuntimeConfig> {
   if (typeof window === "undefined") return defaultConfig;
   try {
@@ -52,23 +64,54 @@ export async function readBackend(
   action: string,
   parameters: Record<string, string> = {},
 ) {
-  if (!config.backendEnabled || !config.appsScriptUrl)
+  if (!config.backendEnabled || !backendEndpoint(config))
     throw new Error("The shared service is not connected.");
-  const p = await getJsonWithJsonpFallback(
-    buildUrl(config.appsScriptUrl, {
-      action,
-      ...parameters,
-      ts: String(Date.now()),
-    }),
-  );
+  if (config.backendProvider === "supabase" && action === "bootstrap") {
+    return getReadableJson(
+      buildUrl(
+        `${config.supabaseUrl}/rest/v1/rpc/cti_bootstrap`,
+        parameters.revision ? { p_revision: parameters.revision } : {},
+      ),
+      { apikey: config.supabasePublishableKey || "" },
+      20000,
+    );
+  }
+  const url = buildUrl(backendEndpoint(config), {
+    action,
+    ...parameters,
+    ts: String(Date.now()),
+  });
+  const p =
+    config.backendProvider === "supabase"
+      ? await getReadableJson(
+          url,
+          { apikey: config.supabasePublishableKey || "" },
+          20000,
+        )
+      : await getJsonWithJsonpFallback(url);
   if (!p?.ok)
     throw new Error(
       p?.error?.message || p?.error || "Unable to read shared data.",
     );
   return p.data;
 }
-export async function loadRemoteData(config: RuntimeConfig): Promise<AppData> {
-  const data = await readBackend(config, "bootstrap");
+export async function loadRemoteData(
+  config: RuntimeConfig,
+  confirmed?: AppData | null,
+): Promise<AppData> {
+  const data = await readBackend(
+    config,
+    "bootstrap",
+    config.backendProvider === "supabase" && confirmed
+      ? { revision: String(confirmed.dataRevision) }
+      : {},
+  );
+  if (
+    data?.unchanged &&
+    confirmed &&
+    data.dataRevision === confirmed.dataRevision
+  )
+    return confirmed;
   if (
     data?.schemaVersion !== "5.0.0" ||
     !Array.isArray(data.series) ||
@@ -92,17 +135,21 @@ export async function requestBackend(
   config: RuntimeConfig,
   body: Record<string, unknown>,
 ) {
-  if (!config.backendEnabled || !config.appsScriptUrl)
+  if (!config.backendEnabled || !backendEndpoint(config))
     throw new Error("The shared service is not connected.");
   const { expectedDataRevision: _revision, ...identity } = body;
   const fingerprint = JSON.stringify({
-    url: config.appsScriptUrl,
+    url: backendEndpoint(config),
     ...identity,
   });
+  const pendingKey =
+    config.backendProvider === "supabase"
+      ? `${PENDING}:${config.supabaseUrl}`
+      : PENDING;
   let pending: Record<
     string,
     { requestId: string; body: Record<string, unknown> }
-  > = JSON.parse(localStorage.getItem(PENDING) || "{}");
+  > = JSON.parse(localStorage.getItem(pendingKey) || "{}");
   // Persist the request before sending. An unconfirmed retry uses the same ID, including after refresh.
   for (const [key, old] of Object.entries(pending)) {
     if (key === fingerprint) continue;
@@ -121,27 +168,28 @@ export async function requestBackend(
         "An earlier save is still unconfirmed. Retry the original change before submitting another one.",
       );
     delete pending[key];
-    localStorage.setItem(PENDING, JSON.stringify(pending));
+    localStorage.setItem(pendingKey, JSON.stringify(pending));
     if (receipt.ok)
       throw new Error(
         "An earlier change was saved. Refresh shared data and review it before submitting this different change.",
       );
   }
+  const retrying = !!pending[fingerprint];
   const entry = pending[fingerprint] || {
     requestId: crypto.randomUUID(),
     body,
   };
   pending[fingerprint] = entry;
-  localStorage.setItem(PENDING, JSON.stringify(pending));
+  localStorage.setItem(pendingKey, JSON.stringify(pending));
   const finish = (result: any) => {
     if (result?.pending)
       throw new Error(
         "Save confirmation is pending. Refresh or retry to check the same request.",
       );
     if (result) {
-      pending = JSON.parse(localStorage.getItem(PENDING) || "{}");
+      pending = JSON.parse(localStorage.getItem(pendingKey) || "{}");
       delete pending[fingerprint];
-      localStorage.setItem(PENDING, JSON.stringify(pending));
+      localStorage.setItem(pendingKey, JSON.stringify(pending));
     }
     if (!result?.ok)
       throw new Error(
@@ -150,18 +198,25 @@ export async function requestBackend(
     return result;
   };
   let prior;
-  try {
-    prior = await readBackend(config, "requestStatus", {
-      requestId: entry.requestId,
-    });
-  } catch {}
+  if (retrying || config.backendProvider !== "supabase")
+    try {
+      prior = await readBackend(config, "requestStatus", {
+        requestId: entry.requestId,
+      });
+    } catch {}
   if (prior) return finish(prior);
   let result;
   try {
-    result = await postReadable(config.appsScriptUrl, {
-      ...entry.body,
-      requestId: entry.requestId,
-    });
+    result = await postReadable(
+      backendEndpoint(config),
+      {
+        ...entry.body,
+        requestId: entry.requestId,
+      },
+      config.backendProvider === "supabase"
+        ? { apikey: config.supabasePublishableKey || "" }
+        : {},
+    );
   } catch (error) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -231,12 +286,17 @@ function isAppsScriptWebApp(url: string) {
   }
 }
 
-async function getReadableJson(url: string) {
+async function getReadableJson(
+  url: string,
+  headers: Record<string, string> = {},
+  timeout = READ_TIMEOUT_MS,
+) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeout);
   try {
     const response = await fetch(url, {
       method: "GET",
+      headers,
       cache: "no-store",
       redirect: "follow",
       signal: controller.signal,
@@ -249,13 +309,22 @@ async function getReadableJson(url: string) {
   }
 }
 
-async function postReadable(url: string, body: Record<string, unknown>) {
+async function postReadable(
+  url: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WRITE_TIMEOUT_MS);
   try {
     const response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      headers: {
+        "Content-Type": headers.apikey
+          ? "application/json"
+          : "text/plain;charset=utf-8",
+        ...headers,
+      },
       body: JSON.stringify(body),
       redirect: "follow",
       signal: controller.signal,

@@ -42,6 +42,7 @@ const browser = await chromium.launch({
   args: ["--no-sandbox"],
 });
 let data = fixture();
+let bootstrapReads = 0;
 const receipts = new Map();
 const errors = [];
 const context = await browser.newContext({
@@ -56,6 +57,9 @@ await context.route("**/runtime-config.json*", (r) =>
     json: {
       backendEnabled: true,
       appsScriptUrl: "https://backend.test/exec",
+      backendProvider: "supabase",
+      supabaseUrl: "https://backend.test",
+      supabasePublishableKey: "sb_publishable_test",
       geminiEnabled: false,
       dataMode: "shared",
     },
@@ -64,20 +68,33 @@ await context.route("**/runtime-config.json*", (r) =>
 await context.route("https://backend.test/**", async (r) => {
   const url = new URL(r.request().url());
   if (r.request().method() === "GET") {
+    if (url.pathname.endsWith("/cti_bootstrap")) {
+      bootstrapReads++;
+      return r.fulfill({
+        json:
+          Number(url.searchParams.get("p_revision")) === data.dataRevision
+            ? { unchanged: true, dataRevision: data.dataRevision }
+            : data,
+      });
+    }
     const action = url.searchParams.get("action");
+    if (action === "bootstrap") bootstrapReads++;
     return r.fulfill({
       json: {
         ok: true,
         data:
           action === "requestStatus"
             ? receipts.get(url.searchParams.get("requestId")) || null
-            : data,
+            : Number(url.searchParams.get("revision")) === data.dataRevision
+              ? { unchanged: true, dataRevision: data.dataRevision }
+              : data,
       },
     });
   }
   const body = JSON.parse(r.request().postData());
   let result;
   try {
+    const previousRevision = data.dataRevision;
     const next = applyMutations(
       data,
       body.mutations,
@@ -87,7 +104,20 @@ await context.route("https://backend.test/**", async (r) => {
       new Date().toISOString(),
     );
     data = next.data;
-    result = { ok: true, data: { ids: next.ids }, revision: data.dataRevision };
+    data.audit = [...next.audit.reverse(), ...(data.audit || [])].slice(0, 80);
+    result = {
+      ok: true,
+      data: { ids: next.ids },
+      revision: data.dataRevision,
+      patch: {
+        previousRevision,
+        dataRevision: data.dataRevision,
+        changes: next.changes,
+        audit: [...next.audit].reverse(),
+        publication: data.publication,
+        publications: [],
+      },
+    };
   } catch (e) {
     result = { ok: false, error: { message: e.message } };
   }
@@ -233,6 +263,7 @@ await page
   .waitFor();
 assert.equal(data.variants[0].archived, true);
 // Cancelling does not strand the user: the panel keeps the class and its revert action.
+const readsBeforeCancellation = bootstrapReads;
 await page.getByRole("button", { name: "Cancel class", exact: true }).click();
 await page.getByLabel("Reason", { exact: true }).fill("Tutor unavailable");
 await page
@@ -252,6 +283,11 @@ await page
   .getByRole("dialog", { name: "Class details", exact: true })
   .waitFor();
 assert(data.variants.every((v) => v.archived));
+assert.equal(
+  bootstrapReads,
+  readsBeforeCancellation,
+  "Saving and reverting should apply returned changes without reloading all data",
+);
 await page.getByRole("button", { name: "Close dialog", exact: true }).click();
 await page.goto(base + "/rooms/");
 await page.getByText("Shared data connected", { exact: true }).waitFor();
