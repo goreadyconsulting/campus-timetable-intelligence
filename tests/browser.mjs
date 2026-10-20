@@ -103,17 +103,53 @@ await page
   .getByRole("heading", { name: "No classes match these filters" })
   .waitFor();
 await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+await page.getByLabel("Campus", { exact: true }).selectOption("Birmingham");
 await page.getByLabel("Lecturer", { exact: true }).selectOption("L1");
 await page.getByLabel("Course", { exact: true }).selectOption("P1");
 await page.getByLabel("Room", { exact: true }).selectOption("R1");
 await page.getByRole("button", { name: /09:00-11:00/ }).waitFor();
-await page.getByRole("button", { name: "Clear filters", exact: true }).click();
-await page.getByRole("button", { name: "Week grid", exact: true }).click();
+await page.getByRole("button", { name: "Calendar", exact: true }).click();
+await page
+  .getByRole("region", { name: "Weekly calendar", exact: true })
+  .waitFor();
+// View, campus and filters survive reopening the timetable without scope parameters.
+await page.goto(base + "/timetable/?week=2026-10-26");
+await page.getByText("Shared data connected", { exact: true }).waitFor();
+assert.equal(
+  await page
+    .getByRole("button", { name: "Calendar", exact: true })
+    .getAttribute("aria-pressed"),
+  "true",
+);
+assert.equal(
+  await page.getByLabel("Campus", { exact: true }).inputValue(),
+  "Birmingham",
+);
+assert.equal(
+  await page.getByLabel("Lecturer", { exact: true }).inputValue(),
+  "L1",
+);
+assert.equal(
+  await page.getByLabel("Course", { exact: true }).inputValue(),
+  "P1",
+);
+assert.equal(await page.getByLabel("Room", { exact: true }).inputValue(), "R1");
 await page.getByRole("button", { name: /09:00-11:00/ }).waitFor();
+await page.getByRole("button", { name: "Clear filters", exact: true }).click();
 await page.getByRole("button", { name: "List", exact: true }).click();
 await page.getByRole("button", { name: /09:00-11:00/ }).click();
+await page
+  .getByRole("dialog", { name: "Class details", exact: true })
+  .waitFor();
+await page.screenshot({ path: ".cache/cti-class-panel.png" });
+await page.getByRole("button", { name: "Move class", exact: true }).click();
 await page.getByLabel("Start", { exact: true }).fill("13:00");
 await page.getByLabel("End", { exact: true }).fill("15:00");
+await page.getByLabel("Reason", { exact: true }).fill("Week six move");
+await page
+  .getByRole("dialog")
+  .screenshot({ path: ".cache/cti-move-panel.png" });
+await page.getByRole("button", { name: "Also change other details" }).click();
 // People selections survive searching and can be toggled without modifier keys.
 await page.getByLabel("Search staff", { exact: true }).fill("Blair");
 await page.getByRole("checkbox", { name: "Blair", exact: true }).check();
@@ -123,10 +159,31 @@ assert(
 );
 await page.getByRole("checkbox", { name: "Blair", exact: true }).uncheck();
 await page.getByLabel("Reason", { exact: true }).fill("Week six move");
+await page
+  .getByRole("region", { name: "Change summary" })
+  .getByText("1 class affected", { exact: true })
+  .waitFor();
+await page
+  .getByRole("dialog")
+  .screenshot({ path: ".cache/cti-change-review.png" });
 await page.getByRole("button", { name: "Save class change" }).click();
-await page.getByRole("dialog").waitFor({ state: "hidden" });
+await page
+  .getByRole("dialog", { name: "Class details", exact: true })
+  .waitFor();
 assert.equal(data.variants.length, 1);
 assert.equal(data.variants[0].scope, "single_occurrence");
+// A focused room edit updates the existing change and retains its edited time.
+await page.getByRole("button", { name: "Change room", exact: true }).click();
+assert.equal(await page.getByLabel("Start", { exact: true }).count(), 0);
+await page.getByLabel("Location", { exact: true }).selectOption("R2");
+await page.getByRole("button", { name: "Save class change" }).click();
+await page
+  .getByRole("dialog", { name: "Class details", exact: true })
+  .waitFor();
+assert.equal(data.variants.length, 1);
+assert.equal(data.variants[0].patch.startLocalTime, "13:00");
+assert.equal(data.variants[0].patch.locationId, "R2");
+await page.getByRole("button", { name: "Close dialog", exact: true }).click();
 await page.screenshot({
   path: ".cache/cti-timetable-desktop.png",
   fullPage: true,
@@ -161,15 +218,41 @@ assert(
       s.teachingWeeks[0] === 6,
   ),
 );
-await page.goto(base + "/changes/?week=2026-10-26");
-await page.getByText("Shared data connected", { exact: true }).waitFor();
+await page.getByRole("button", { name: /13:00-15:00/ }).click();
+await page.getByRole("button", { name: "Revert change", exact: true }).click();
+await page
+  .getByRole("region", { name: "Change summary" })
+  .getByText("After reverting", { exact: true })
+  .waitFor();
+await page
+  .getByRole("dialog")
+  .getByRole("button", { name: "Revert change", exact: true })
+  .click();
+await page
+  .getByRole("dialog", { name: "Class details", exact: true })
+  .waitFor();
+assert.equal(data.variants[0].archived, true);
+// Cancelling does not strand the user: the panel keeps the class and its revert action.
+await page.getByRole("button", { name: "Cancel class", exact: true }).click();
+await page.getByLabel("Reason", { exact: true }).fill("Tutor unavailable");
+await page
+  .getByRole("region", { name: "Change summary" })
+  .getByText("Cancelled", { exact: true })
+  .waitFor();
+await page.getByRole("button", { name: "Save class change" }).click();
+await page
+  .getByRole("dialog", { name: "Class details", exact: true })
+  .waitFor();
 await page.getByRole("button", { name: "Revert change", exact: true }).click();
 await page
   .getByRole("dialog")
   .getByRole("button", { name: "Revert change", exact: true })
   .click();
-await page.getByRole("dialog").waitFor({ state: "hidden" });
-assert.equal(data.variants[0].archived, true);
+await page
+  .getByRole("dialog", { name: "Class details", exact: true })
+  .waitFor();
+assert(data.variants.every((v) => v.archived));
+await page.getByRole("button", { name: "Close dialog", exact: true }).click();
 await page.goto(base + "/rooms/");
 await page.getByText("Shared data connected", { exact: true }).waitFor();
 await page.getByRole("button", { name: "Add location", exact: true }).click();
@@ -192,6 +275,20 @@ await page.keyboard.press("Escape");
 await page.setViewportSize({ width: 390, height: 844 });
 await page.goto(base + "/timetable/?week=2026-10-26");
 await page.getByText("Shared data connected", { exact: true }).waitFor();
+await page.getByRole("button", { name: "Calendar", exact: true }).click();
+await page
+  .getByRole("region", { name: "Weekly calendar", exact: true })
+  .waitFor();
+assert.equal(
+  await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+  false,
+  "Mobile calendar overflow",
+);
+await page.screenshot({
+  path: ".cache/cti-calendar-mobile.png",
+  fullPage: true,
+});
+await page.getByRole("button", { name: "List", exact: true }).click();
 assert(await page.getByLabel("Lecturer", { exact: true }).isHidden());
 await page.getByRole("button", { name: "Filters", exact: true }).click();
 await page.getByLabel("Lecturer", { exact: true }).selectOption("L2");
@@ -217,6 +314,7 @@ await page.keyboard.press("Escape");
 assert.equal(await page.getByRole("dialog").count(), 0);
 for (const route of [
   "calendar",
+  "changes",
   "availability",
   "planning",
   "publication",
@@ -254,6 +352,6 @@ assert(
 );
 assert.equal(errors.length, 0, errors.join("\n"));
 console.log(
-  "Browser flows passed: timetable filters and views, checkbox selections, class creation, scoped edit, revert, failed form retention, mobile navigation, routes and offline controls.",
+  "Browser flows passed: remembered campus/filters/view, mobile calendar, class panel, focused edits, impact review, cancellation and direct revert, class creation, failed form retention, navigation and offline controls.",
 );
 await browser.close();

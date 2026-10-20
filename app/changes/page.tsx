@@ -3,7 +3,7 @@ import { useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { useCampusData } from "@/components/data-context";
 import { ScopedChange } from "@/components/scoped-change";
-import { Modal, FormError } from "@/components/modal";
+import { RevertChange } from "@/components/revert-change";
 import { resolveOccurrences, variantDates } from "@/lib/recurrence";
 import { days } from "@/lib/academic";
 import type { ScheduleVariant } from "@/types/scheduling";
@@ -15,9 +15,7 @@ export default function Changes() {
     [from, setFrom] = useState(""),
     [until, setUntil] = useState(""),
     [edit, setEdit] = useState<ScheduleVariant | null>(null),
-    [revert, setRevert] = useState<ScheduleVariant | null>(null),
-    [error, setError] = useState(""),
-    [busy, setBusy] = useState(false);
+    [revert, setRevert] = useState<ScheduleVariant | null>(null);
   const rows = (c.rawData.variants || []).filter((v) => {
     const s = c.rawData.series?.find((s) => s.id === v.seriesId);
     if (!s || s.academicYearId !== c.academicYearId || v.archived || s.archived)
@@ -64,8 +62,8 @@ export default function Changes() {
     : undefined;
   return (
     <AppShell
-      title="Changes"
-      subtitle="Review scoped overrides, cancellations and additional teaching"
+      title="Change history"
+      subtitle="Review class changes, cancellations and extra classes"
     >
       <div className="mb-5 flex flex-wrap gap-3">
         <input
@@ -158,7 +156,6 @@ export default function Changes() {
                   disabled={!c.canWrite}
                   onClick={() => {
                     setRevert(v);
-                    setError("");
                   }}
                 >
                   Revert change
@@ -181,34 +178,7 @@ export default function Changes() {
         />
       )}
       {revert && (
-        <Modal
-          title="Revert this change?"
-          busy={busy}
-          onClose={() => setRevert(null)}
-        >
-          <p>
-            The next applicable override or the original series will be
-            restored. Published snapshots remain unchanged.
-          </p>
-          <FormError message={error} />
-          <button
-            className="btn-primary mt-4"
-            disabled={busy}
-            onClick={async () => {
-              setBusy(true);
-              try {
-                await c.archive("variants", revert.id);
-                setRevert(null);
-              } catch (e) {
-                setError((e as Error).message);
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            Revert change
-          </button>
-        </Modal>
+        <RevertChange variant={revert} onClose={() => setRevert(null)} />
       )}
     </AppShell>
   );

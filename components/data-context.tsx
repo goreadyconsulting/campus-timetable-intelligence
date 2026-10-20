@@ -36,6 +36,7 @@ export type BackendStatus =
   | "Syncing"
   | "Unavailable";
 const CACHE = "cti-confirmed-cache-v5";
+const SCOPE = "cti-timetable-scope";
 function useDataValue() {
   const [rawData, setData] = useState<AppData>(() =>
     migrateData(structuredClone(initialData)),
@@ -53,6 +54,7 @@ function useDataValue() {
     [academicYearId, setAcademicYearId] = useState("AY-2026"),
     [weekStart, setWeekStart] = useState(monday(campusToday()));
   const [notice, setNotice] = useState("");
+  const [scopeReady, setScopeReady] = useState(false);
   async function refresh(config = backendConfig) {
     setStatus("Connecting");
     try {
@@ -85,21 +87,37 @@ function useDataValue() {
       } catch {}
     });
     const params = new URLSearchParams(location.search);
-    if (params.get("campus")) setCampus(params.get("campus")!);
-    if (params.get("year")) setAcademicYearId(params.get("year")!);
+    let saved: { campus?: string; year?: string } = {};
+    try {
+      saved = JSON.parse(localStorage.getItem(SCOPE) || "{}") || {};
+    } catch {}
+    const selectedCampus = params.get("campus") || saved.campus;
+    const selectedYear = params.get("year") || saved.year;
+    if (typeof selectedCampus === "string" && selectedCampus)
+      setCampus(selectedCampus);
+    if (typeof selectedYear === "string" && selectedYear)
+      setAcademicYearId(selectedYear);
     if (/^\d{4}-\d{2}-\d{2}$/.test(params.get("week") || ""))
       setWeekStart(monday(params.get("week")!));
+    setScopeReady(true);
     return () => {
       active = false;
     };
   }, []);
   useEffect(() => {
+    if (!scopeReady) return;
     const url = new URL(location.href);
     url.searchParams.set("campus", campus);
     url.searchParams.set("year", academicYearId);
     url.searchParams.set("week", weekStart);
     history.replaceState(null, "", url);
-  }, [campus, academicYearId, weekStart]);
+    try {
+      localStorage.setItem(
+        SCOPE,
+        JSON.stringify({ campus, year: academicYearId }),
+      );
+    } catch {}
+  }, [campus, academicYearId, weekStart, scopeReady]);
   const derived = useMemo(() => {
     try {
       const all = resolveOccurrences(
@@ -203,6 +221,7 @@ function useDataValue() {
     notice,
     setNotice,
     canWrite: backendStatus === "Connected",
+    scopeReady,
     campus,
     setCampus,
     academicYearId,

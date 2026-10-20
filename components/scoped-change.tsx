@@ -13,16 +13,31 @@ import { days, parseWeeks } from "@/lib/academic";
 import { assertRecord } from "@/lib/validation";
 import { variantDates, baseDates, resolveOccurrences } from "@/lib/recurrence";
 import { detectOccurrenceConflicts } from "@/lib/constraints";
+import {
+  compareClasses,
+  editedPatch,
+  occurrencePatch,
+} from "@/lib/change-review";
+import { ChangeReview } from "./change-review";
+export type ClassAction = "move" | "room" | "lecturer" | "cancel" | "all";
 export function ScopedChange({
   occurrence,
   onClose,
   initialPatch = {},
   existing,
+  initialAction = "all",
+  placement = "center",
+  onBack,
+  onSaved,
 }: {
   occurrence: Session;
   onClose: () => void;
   initialPatch?: SeriesPatch;
   existing?: ScheduleVariant;
+  initialAction?: ClassAction;
+  placement?: "center" | "side";
+  onBack?: () => void;
+  onSaved?: () => void;
 }) {
   const c = useCampusData(),
     d = c.rawData,
@@ -30,7 +45,9 @@ export function ScopedChange({
   const [scope, setScope] = useState<VariantScope | "entire_series">(
       existing?.scope || "single_occurrence",
     ),
-    [operation, setOperation] = useState(existing?.operation || "override"),
+    [operation, setOperation] = useState<ScheduleVariant["operation"]>(
+      initialAction === "cancel" ? "cancel" : existing?.operation || "override",
+    ),
     [patch, setPatch] = useState<SeriesPatch>({
       ...occurrence.base,
       dayOfWeek: days.indexOf(occurrence.day) + 1,
@@ -52,8 +69,14 @@ export function ScopedChange({
     [reason, setReason] = useState(existing?.reason || ""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  const [showAll, setShowAll] = useState(initialAction === "all");
   const preview = useMemo(() => {
     try {
+      const changes = editedPatch(
+        occurrencePatch(occurrence),
+        patch,
+        scope === "entire_series" ? {} : existing?.patch,
+      );
       const variant: ScheduleVariant = {
         id: existing?.id || "PREVIEW",
         seriesId: s.id,
@@ -71,7 +94,7 @@ export function ScopedChange({
       };
       const series = {
         ...s,
-        ...patch,
+        ...changes,
         ...(operation === "cancel" ? { status: "Cancelled" as const } : {}),
       };
       if (scope === "entire_series") assertRecord(d, "series", series);
@@ -102,6 +125,7 @@ export function ScopedChange({
         variant,
         series,
         dates,
+        changes: compareClasses(d, next, s.id),
         conflicts,
         newConflicts: conflicts.filter(
           (x) => !old.some((o) => o.fingerprint === x.fingerprint),
@@ -112,6 +136,7 @@ export function ScopedChange({
       return {
         error: (e as Error).message,
         dates: [],
+        changes: [],
         conflicts: [],
         newConflicts: [],
       };
@@ -127,19 +152,29 @@ export function ScopedChange({
     end,
     reason,
     existing,
-    occurrence.originalDate,
+    occurrence,
   ]);
   const set = (k: keyof SeriesPatch, v: any) =>
     setPatch((p) => ({ ...p, [k]: v }));
   return (
     <Modal
-      title={`Change ${occurrence.moduleName}`}
+      title={
+        initialAction === "all"
+          ? `Change ${occurrence.moduleName}`
+          : {
+              move: "Move class",
+              room: "Change room",
+              lecturer: "Change lecturer",
+              cancel: "Cancel class",
+            }[initialAction]
+      }
       onClose={onClose}
       busy={busy}
+      placement={placement}
     >
       <p className="mb-4 text-sm text-slate-500">
-        {occurrence.date} · {occurrence.start}-{occurrence.end} · {s.timeZone} ·{" "}
-        {occurrence.room}
+        {occurrence.moduleName} · {occurrence.date} · {occurrence.start}-
+        {occurrence.end} · {s.timeZone} · {occurrence.room}
       </p>
       <form
         onSubmit={async (e) => {
@@ -154,7 +189,8 @@ export function ScopedChange({
               await c.save("series", preview.series, reason);
             else
               await c.save("variants", { ...preview.variant, reason }, reason);
-            onClose();
+            if (onSaved) onSaved();
+            else onClose();
           } catch (e) {
             setError((e as Error).message);
           } finally {
@@ -167,7 +203,10 @@ export function ScopedChange({
             <select
               className="input"
               value={scope}
-              onChange={(e) => setScope(e.target.value as any)}
+              onChange={(e) => {
+                setScope(e.target.value as any);
+                if (e.target.value !== "single_occurrence") setShowAll(true);
+              }}
             >
               <option value="single_occurrence">Only this class</option>
               <option value="week_set">Selected teaching weeks</option>
@@ -180,19 +219,23 @@ export function ScopedChange({
               )}
             </select>
           </Field>
-          <Field label="Action">
-            <select
-              className="input"
-              value={operation}
-              onChange={(e) => setOperation(e.target.value as any)}
-            >
-              <option value="override">Change time, room or people</option>
-              <option value="cancel">Cancel class</option>
-              {scope !== "entire_series" && (
-                <option value="additional_session">Add an extra session</option>
-              )}
-            </select>
-          </Field>
+          {showAll && (
+            <Field label="Action">
+              <select
+                className="input"
+                value={operation}
+                onChange={(e) => setOperation(e.target.value as any)}
+              >
+                <option value="override">Change time, room or people</option>
+                <option value="cancel">Cancel class</option>
+                {scope !== "entire_series" && (
+                  <option value="additional_session">
+                    Add an extra session
+                  </option>
+                )}
+              </select>
+            </Field>
+          )}
           {scope === "week_set" && (
             <Field label="Teaching weeks">
               <input
@@ -224,70 +267,94 @@ export function ScopedChange({
           )}
           {operation !== "cancel" && (
             <>
-              <Field label="Day">
-                <select
-                  className="input"
-                  value={patch.dayOfWeek}
-                  onChange={(e) => set("dayOfWeek", Number(e.target.value))}
-                >
-                  {days.map((day, i) => (
-                    <option key={day} value={i + 1}>
-                      {day}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Location">
-                <select
-                  className="input"
-                  value={patch.locationId}
-                  onChange={(e) => set("locationId", e.target.value)}
-                >
-                  {d.rooms
-                    .filter(
-                      (r) => !r.archived && r.campus === occurrence.campus,
-                    )
-                    .map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.room} · {r.capacity} seats · {r.type}
+              {(showAll || initialAction === "move") && (
+                <Field label="Day">
+                  <select
+                    className="input"
+                    value={patch.dayOfWeek}
+                    onChange={(e) => set("dayOfWeek", Number(e.target.value))}
+                  >
+                    {days.map((day, i) => (
+                      <option key={day} value={i + 1}>
+                        {day}
                       </option>
                     ))}
-                </select>
-              </Field>
-              <Field label="Start">
-                <input
-                  className="input"
-                  type="time"
-                  value={patch.startLocalTime}
-                  onChange={(e) => set("startLocalTime", e.target.value)}
+                  </select>
+                </Field>
+              )}
+              {(showAll || initialAction === "room") && (
+                <Field label="Location">
+                  <select
+                    className="input"
+                    value={patch.locationId}
+                    onChange={(e) => set("locationId", e.target.value)}
+                  >
+                    {d.rooms
+                      .filter(
+                        (r) => !r.archived && r.campus === occurrence.campus,
+                      )
+                      .map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.room} · {r.capacity} seats · {r.type}
+                        </option>
+                      ))}
+                  </select>
+                </Field>
+              )}
+              {(showAll || initialAction === "move") && (
+                <Field label="Start">
+                  <input
+                    className="input"
+                    type="time"
+                    value={patch.startLocalTime}
+                    onChange={(e) => set("startLocalTime", e.target.value)}
+                  />
+                </Field>
+              )}
+              {(showAll || initialAction === "move") && (
+                <Field label="End">
+                  <input
+                    className="input"
+                    type="time"
+                    value={patch.endLocalTime}
+                    onChange={(e) => set("endLocalTime", e.target.value)}
+                  />
+                </Field>
+              )}
+              {(showAll || initialAction === "lecturer") && (
+                <MultiSelect
+                  label="Staff"
+                  options={d.lecturers
+                    .filter((l) => !l.archived)
+                    .map((l) => ({ id: l.id!, name: l.name }))}
+                  value={patch.staffIds || []}
+                  onChange={(next) => set("staffIds", next)}
                 />
-              </Field>
-              <Field label="End">
-                <input
-                  className="input"
-                  type="time"
-                  value={patch.endLocalTime}
-                  onChange={(e) => set("endLocalTime", e.target.value)}
+              )}
+              {showAll && (
+                <MultiSelect
+                  label="Individual students"
+                  options={(d.students || [])
+                    .filter(
+                      (st) => !st.archived && st.campus === occurrence.campus,
+                    )
+                    .map((st) => ({
+                      id: st.id,
+                      name: `${st.name} · ${st.id}`,
+                    }))}
+                  value={patch.studentIds || []}
+                  onChange={(next) => set("studentIds", next)}
                 />
-              </Field>
-              <MultiSelect
-                label="Staff"
-                options={d.lecturers
-                  .filter((l) => !l.archived)
-                  .map((l) => ({ id: l.id!, name: l.name }))}
-                value={patch.staffIds || []}
-                onChange={(next) => set("staffIds", next)}
-              />
-              <MultiSelect
-                label="Individual students"
-                options={(d.students || [])
-                  .filter(
-                    (st) => !st.archived && st.campus === occurrence.campus,
-                  )
-                  .map((st) => ({ id: st.id, name: `${st.name} · ${st.id}` }))}
-                value={patch.studentIds || []}
-                onChange={(next) => set("studentIds", next)}
-              />
+              )}
+              {!showAll && (
+                <button
+                  type="button"
+                  className="col-span-full justify-self-start py-2 text-sm font-semibold text-teal-700"
+                  onClick={() => setShowAll(true)}
+                >
+                  Also change other details
+                </button>
+              )}
             </>
           )}
           <div className="col-span-full">
@@ -301,29 +368,39 @@ export function ScopedChange({
             </Field>
           </div>
         </div>
-        <div className="mt-4 rounded-xl bg-slate-50 p-4">
-          <p className="font-semibold">
-            {preview.dates.length}{" "}
-            {preview.dates.length === 1 ? "class" : "classes"} affected
-          </p>
-          <p className="text-sm text-slate-600">
-            Teaching weeks{" "}
-            {[...new Set(preview.dates.map((x) => x.week.weekNumber))].join(
-              ", ",
-            ) || "None"}
-          </p>
+        {!preview.error && <ChangeReview changes={preview.changes} />}
+        <div className="mt-3 rounded-xl bg-slate-50 p-4">
+          {!preview.error &&
+            preview.dates.length > preview.changes.length &&
+            operation !== "additional_session" && (
+              <p className="mb-2 text-sm">
+                {preview.dates.length} dates are in this scope. The comparison
+                shows the classes whose details actually change.
+              </p>
+            )}
           {scope === "entire_series" && (
+            <div className="mt-2 text-sm">
+              <p>
+                {patch.dayOfWeek !== occurrencePatch(occurrence).dayOfWeek
+                  ? "Changing the repeating weekday can change which dated exceptions apply. Review the affected dates before saving."
+                  : "Individual changes already made to specific dates still take priority."}
+              </p>
+              <p className="mt-2">
+                This updates the repeating class itself. To reverse it later,
+                edit the repeating class in Plan teaching → Manage recurring
+                teaching.
+              </p>
+            </div>
+          )}
+          {!preview.error && (
             <p className="mt-2 text-sm">
-              Individual changes already made to specific dates still take
-              priority.
+              {preview.newConflicts.length
+                ? `${preview.newConflicts.length} new conflicts need review.`
+                : "No new conflicts from this change."}{" "}
+              {preview.conflicts.length > 0 &&
+                `${preview.conflicts.length} conflicts affect this class across its teaching weeks. You can save a draft; blocking conflicts must be resolved before publishing.`}
             </p>
           )}
-          <p className="mt-2 text-sm">
-            {preview.newConflicts.length} new conflicts;{" "}
-            {preview.conflicts.length} conflicts affect this class across its
-            teaching weeks. Draft changes can be saved; hard conflicts block
-            publication.
-          </p>
           {preview.newConflicts.slice(0, 8).map((x) => (
             <p className="mt-1 text-sm text-red-800" key={x.id}>
               {x.time}: {x.type}
@@ -331,7 +408,17 @@ export function ScopedChange({
           ))}
         </div>
         <FormError message={preview.error || error} />
-        <div className="mt-4 flex justify-end gap-2">
+        <div className="sticky bottom-0 mt-4 flex justify-end gap-2 border-t bg-white py-4">
+          {onBack && (
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={busy}
+              onClick={onBack}
+            >
+              Back to class
+            </button>
+          )}
           <button
             type="submit"
             className="btn-primary"

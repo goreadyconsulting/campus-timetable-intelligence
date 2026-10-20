@@ -12,18 +12,20 @@ export function Modal({
   children,
   onClose,
   busy = false,
+  placement = "center",
 }: {
   title: string;
   children: React.ReactNode;
   onClose: () => void;
   busy?: boolean;
+  placement?: "center" | "side";
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement;
     ref.current?.showModal();
     return () => {
-      previous?.focus();
+      previous?.focus({ preventScroll: true });
     };
   }, []);
   return createPortal(
@@ -33,7 +35,7 @@ export function Modal({
         e.preventDefault();
         if (!busy) onClose();
       }}
-      className="w-[min(94vw,880px)] max-h-[90vh] overflow-y-auto rounded-2xl bg-white p-0 shadow-2xl backdrop:bg-slate-950/50"
+      className={`${placement === "side" ? "fixed inset-y-0 left-auto right-0 m-0 h-[100dvh] max-h-[100dvh] w-full max-w-[560px] rounded-none backdrop:bg-slate-950/20" : "w-[min(94vw,880px)] max-h-[90vh] rounded-2xl backdrop:bg-slate-950/50"} overflow-y-auto bg-white p-0 shadow-2xl`}
       aria-label={title}
     >
       <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-white p-5">

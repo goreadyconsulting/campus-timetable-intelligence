@@ -1,15 +1,16 @@
 "use client";
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { DateTime } from "luxon";
 import { AppShell } from "@/components/app-shell";
 import { useCampusData } from "@/components/data-context";
-import { ScopedChange } from "@/components/scoped-change";
+import { ClassPanel } from "@/components/class-panel";
 import { RecordEditor } from "@/components/record-editor";
 import { datePlus, days, monday, campusToday } from "@/lib/academic";
 import { minutes } from "@/lib/constraints";
 import { downloadCsv, timetableRows, downloadIcs } from "@/lib/export";
 import type { Session } from "@/types";
 import type { SeriesPatch } from "@/types/scheduling";
+const PREFERENCES = "cti-timetable-preferences";
 export default function Timetable() {
   const c = useCampusData();
   const [clock, setClock] = useState<number | null>(null);
@@ -41,6 +42,40 @@ export default function Timetable() {
     [room, setRoom] = useState(""),
     [filtersOpen, setFiltersOpen] = useState(false),
     [create, setCreate] = useState(false);
+  const [preferencesReady, setPreferencesReady] = useState(false);
+  const previousCampus = useRef(c.campus);
+  useEffect(() => {
+    if (!c.scopeReady || preferencesReady) return;
+    try {
+      const saved = JSON.parse(localStorage.getItem(PREFERENCES) || "{}");
+      if (saved?.view === "calendar" || saved?.view === "list")
+        setAgenda(saved.view === "list");
+      if (typeof saved?.search === "string") setQ(saved.search);
+      if (typeof saved?.lecturer === "string") setLecturer(saved.lecturer);
+      if (saved?.campus === c.campus) {
+        if (typeof saved.course === "string") setCourse(saved.course);
+        if (typeof saved.room === "string") setRoom(saved.room);
+      }
+    } catch {}
+    previousCampus.current = c.campus;
+    setPreferencesReady(true);
+  }, [c.scopeReady, c.campus, preferencesReady]);
+  useEffect(() => {
+    if (!preferencesReady) return;
+    try {
+      localStorage.setItem(
+        PREFERENCES,
+        JSON.stringify({
+          view: agenda ? "list" : "calendar",
+          search: q,
+          lecturer,
+          course,
+          room,
+          campus: c.campus,
+        }),
+      );
+    } catch {}
+  }, [preferencesReady, agenda, q, lecturer, course, room, c.campus]);
   function courseForSession(session: Session) {
     const programmeId =
       c.rawData.series?.find((item) => item.id === session.seriesId)
@@ -117,8 +152,12 @@ export default function Timetable() {
     setRoom("");
   }
   useEffect(() => {
-    setRoom("");
-  }, [c.campus]);
+    if (preferencesReady && previousCampus.current !== c.campus) {
+      setRoom("");
+      setCourse("");
+    }
+    previousCampus.current = c.campus;
+  }, [c.campus, preferencesReady]);
   const activeConflicts = c.data.conflicts.filter((x) => !x.resolved);
   const columns = days.map((day, i) => ({
     day,
@@ -234,29 +273,31 @@ export default function Timetable() {
             <div
               role="group"
               aria-label="Timetable view"
-              className="hidden gap-1 rounded-xl bg-slate-100 p-1 md:flex"
+              className="flex gap-1 rounded-xl bg-slate-100 p-1"
             >
-              <button
-                className={
-                  agenda
-                    ? "btn-secondary"
-                    : "rounded-lg px-3 text-sm font-semibold text-slate-600"
-                }
-                aria-pressed={agenda}
-                onClick={() => setAgenda(true)}
-              >
-                List
-              </button>
               <button
                 className={
                   !agenda
                     ? "btn-secondary"
-                    : "rounded-lg px-3 text-sm font-semibold text-slate-600"
+                    : "min-h-11 rounded-lg px-3 text-sm font-semibold text-slate-600"
                 }
                 aria-pressed={!agenda}
+                aria-controls="timetable-calendar"
                 onClick={() => setAgenda(false)}
               >
-                Week grid
+                Calendar
+              </button>
+              <button
+                className={
+                  agenda
+                    ? "btn-secondary"
+                    : "min-h-11 rounded-lg px-3 text-sm font-semibold text-slate-600"
+                }
+                aria-pressed={agenda}
+                aria-controls="timetable-list"
+                onClick={() => setAgenda(true)}
+              >
+                List
               </button>
             </div>
             <details className="relative">
@@ -374,21 +415,27 @@ export default function Timetable() {
           )}
         </div>
         {!agenda && (
-          <p className="mt-2 hidden text-xs text-slate-500 md:block">
-            Scroll across to see overlapping classes. Choose List for a compact
-            view.
+          <p className="mt-2 text-xs text-slate-500">
+            Scroll across to see all days. Filter by lecturer, course or room to
+            focus the calendar.
           </p>
         )}
       </section>
       <div
-        className={`${agenda ? "hidden" : "hidden md:block"} enterprise-card overflow-x-auto`}
+        id="timetable-calendar"
+        role="region"
+        aria-label="Weekly calendar"
+        tabIndex={0}
+        className={`${agenda || !sessions.length ? "hidden" : ""} enterprise-card overflow-x-auto overscroll-x-contain`}
       >
         <div className="w-max min-w-full">
           <div
             className="grid border-b"
             style={{ gridTemplateColumns: gridColumns }}
           >
-            <div />
+            <div className="sticky left-0 z-20 bg-white px-2 py-3 text-xs text-slate-500">
+              Time
+            </div>
             {columns.map((col) => (
               <div className="border-l px-2 py-3 text-sm" key={col.day}>
                 <strong>{col.day}</strong>
@@ -400,7 +447,7 @@ export default function Timetable() {
             className="relative grid"
             style={{ height: 14 * 80, gridTemplateColumns: gridColumns }}
           >
-            <div className="relative">
+            <div className="sticky left-0 z-20 bg-white">
               {Array.from({ length: 15 }, (_, i) => (
                 <span
                   key={i}
@@ -503,7 +550,12 @@ export default function Timetable() {
           </div>
         </div>
       </div>
-      <div className={`${agenda ? "" : "md:hidden"} space-y-6`}>
+      <div
+        id="timetable-list"
+        role="region"
+        aria-label="Class list"
+        className={`${agenda ? "" : "hidden"} space-y-6`}
+      >
         {columns.map((col) => {
           const daySessions = sessions.filter((s) => s.date === col.date);
           if (!daySessions.length) return null;
@@ -600,8 +652,9 @@ export default function Timetable() {
         </div>
       )}
       {selected && (
-        <ScopedChange
-          occurrence={selected}
+        <ClassPanel
+          key={selected.id}
+          selected={selected}
           initialPatch={patch}
           onClose={() => setSelected(null)}
         />
