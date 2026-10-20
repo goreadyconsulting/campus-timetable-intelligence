@@ -65,12 +65,53 @@ jobs:
 
   deploy:
     if: github.event_name != 'pull_request'
+    permissions:
+      actions: read
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     needs: build
     steps:
+      # The repository may still use branch-based Pages publishing. Its automatic
+      # job must finish first so it cannot replace the compiled Next.js site.
+      - name: Wait for branch-based Pages publishing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_type="$(gh api "repos/$GH_REPO/pages" --jq '.build_type')"
+          if [ "$build_type" = "workflow" ]; then
+            echo "Pages uses the custom workflow only."
+            exit 0
+          fi
+          if [ "$build_type" != "legacy" ]; then
+            echo "::error::Unrecognized Pages publishing mode: $build_type"
+            exit 1
+          fi
+          for attempt in {1..60}; do
+            runs="$(gh api --method GET "repos/$GH_REPO/actions/runs" -f per_page=100)"
+            ready="$(jq --arg sha "$COMMIT_SHA" '
+              [.workflow_runs[] | select(.path == "dynamic/pages/pages-build-deployment")] as $runs |
+              ([$runs[] | select(.head_sha == $sha)] | length > 0) and
+              ([$runs[] | select(.status != "completed")] | length == 0)
+            ' <<< "$runs")"
+            if [ "$ready" = "true" ]; then
+              echo "Branch-based publishing has finished; deploying the compiled site."
+              exit 0
+            fi
+            echo "Waiting for branch-based Pages publishing ($attempt/60)."
+            sleep 10
+          done
+          echo "::error::Branch-based publishing did not finish. Set Pages source to GitHub Actions, then rerun this job."
+          exit 1
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
