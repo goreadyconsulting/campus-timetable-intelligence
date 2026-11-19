@@ -63,3 +63,42 @@ npm run test:browser
 ```
 
 `CHROMIUM_EXECUTABLE_PATH` and `PLAYWRIGHT_MODULE` can select an existing test runtime. Browser screenshots are temporary verification output, not application assets.
+
+## Location utilisation and realistic sample data
+
+Reports opens on Location utilisation. Choose the academic year, inclusive dates,
+campus, location and whether weekends are included. The report uses the working
+timetable's resolved occurrences, campus openings, room weekly availability and
+dated exceptions. It includes unused physical locations, removes cancellations,
+unions overlapping booking intervals, and excludes out-of-availability hours
+from the headline measures.
+
+Frequency = unique booked room-hours / available room-hours. Planned occupancy
+= room-hour-weighted class size / location capacity using only hours with usable
+evidence. Utilisation = frequency × planned occupancy. Partial coverage makes the
+last two results provisional; unknown sizes (including zero in the source profile)
+and ambiguous overlapping bookings do not count as evidence. Actual attendance is
+not available. Physical/virtual classification currently uses labels; combined
+room configurations require explicit constituent-room modelling before they can
+be safely deduplicated. Campus opening hours are assumed to apply on every selected
+day unless room availability rules say otherwise.
+
+The synthetic generator is deliberately local-only and never contacts Supabase.
+It was designed around the aggregate characteristics of the institutional session
+report (mixed one-off and recurring activity IDs, weekends, online delivery and
+date-specific changes). It does not reproduce the original data or infer identities,
+actual room capacities or actual enrolment from that workbook.
+
+```sh
+npx tsx scripts/generate-demo-data.ts small
+npx tsx scripts/generate-demo-data.ts demonstration
+npx tsx scripts/generate-demo-data.ts institutional
+npx tsx scripts/generate-demo-data.ts demonstration --room-clash
+```
+
+These write canonical JSON to ignored `.cache/` paths, with target volumes of
+500, 7,500 or 100,000 dated occurrences respectively. No live reset/upload route is
+introduced, and no dataset is automatically installed. These fixtures are inputs
+for isolated development and load testing, not a claim of demonstrated production
+performance. The institutional profile must be profiled for bootstrap, reporting,
+conflict checks and browser responsiveness before deployment at that scale.
