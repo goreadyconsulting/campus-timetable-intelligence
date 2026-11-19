@@ -59,16 +59,23 @@ export function syntheticTimetable(profile: DemoProfile, conflictScenario = fals
       }
     }
   }
-  let count=0, sequence=0;
+  let count=0, sequence=0, seen=0;
   // Source profile: many one-date activity IDs plus recurring IDs with several
   // dates. Six-date patterns and three one-date activities approximate the mix.
   const dayOrder=[1,2,3,4,5,6,7];
+  const weekendTrackCount=tracks.filter(t=>(Number(t.roomId.split("-R").at(-1))-1)%5===0).length;
+  const totalPossible=weeks.length*(5*tracks.length+2*weekendTrackCount);
   outer: for(let offset=0;offset<weeks.length;offset+=9){
     for(const day of dayOrder){
       for(const t of tracks){
         const roomNumber=Number(t.roomId.split("-R").at(-1));
         if(day>5 && (roomNumber-1)%5!==0)continue;
         const block=weeks.slice(offset,offset+9);
+        seen+=block.length;
+        // Systematic sampling of whole teaching patterns spreads the volume
+        // across campuses, times, days and the entire academic year.
+        if(Math.round(seen*config.occurrences/totalPossible)-count <
+          Math.min(block.length,config.occurrences-count)) continue;
         const chunks=[block.slice(0,6),...block.slice(6).map(w=>[w])];
         for(const raw of chunks){
           const selected=raw.slice(0,config.occurrences-count);
@@ -83,15 +90,26 @@ export function syntheticTimetable(profile: DemoProfile, conflictScenario = fals
     }
   }
   if(count!==config.occurrences)throw new Error("Synthetic timetable could not reach its target.");
-  const first=data.series!.find(s=>s.teachingWeeks.length>1)!;
+  let first=data.series!.find(s=>s.teachingWeeks.length>1)!;
   // A controlled change of time on one teaching week leaves the base intact.
   // Optional room clash is produced by overlapping real allocations, never by
   // inserting fabricated conflict entries.
-  const partner: ScheduleSeries | undefined = conflictScenario
-    ? data.series!.find(s=>s.campusId===first.campusId && s.locationId!==first.locationId &&
-      s.dayOfWeek===first.dayOfWeek && s.startLocalTime===first.startLocalTime &&
-      s.teachingWeeks.includes(first.teachingWeeks[0]))
-    : undefined;
+  let partner: ScheduleSeries | undefined;
+  if(conflictScenario){
+    const slots=new Map<string,ScheduleSeries>();
+    for(const s of data.series!){
+      for(const w of s.teachingWeeks){
+        const key=[s.campusId,s.dayOfWeek,s.startLocalTime,w].join("|");
+        const other=slots.get(key);
+        if(other && other.locationId!==s.locationId && other.teachingWeeks.length>1 && other.teachingWeeks[0]===w){
+          first=other;partner=s;break;
+        }
+        if(!other)slots.set(key,s);
+      }
+      if(partner)break;
+    }
+    if(!partner)throw new Error("No overlapping room candidate found for this synthetic profile.");
+  }
   data.variants!.push({id:"SYN-V1",seriesId:first.id,scope:"week_set",teachingWeeks:[first.teachingWeeks[0]],
     operation:"override",patch:partner?{locationId:partner.locationId}:{startLocalTime:"18:00",endLocalTime:"20:00"},
     reason:partner?"Demo overlapping room allocation":"Demo academic time-change request",status:"Draft",createdAt:stamp,revision:1});
