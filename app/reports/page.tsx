@@ -6,12 +6,15 @@ import { Field, FormError } from "@/components/modal";
 import { resolveOccurrences } from "@/lib/recurrence";
 import { detectOccurrenceConflicts, minutes } from "@/lib/constraints";
 import { datePlus } from "@/lib/academic";
+import { locationUsage } from "@/lib/location-usage";
+import { LocationUsageReport, usageExport } from "@/components/location-usage-report";
 import { downloadCsv, downloadIcs, timetableRows } from "@/lib/export";
 export default function Reports() {
   const c = useCampusData();
   const [start, setStart] = useState(""),
     [end, setEnd] = useState(""),
-    [kind, setKind] = useState("Timetable"),
+    [kind, setKind] = useState("Location utilisation"),
+    [weekdaysOnly, setWeekdaysOnly] = useState(false),
     [staff, setStaff] = useState(""),
     [student, setStudent] = useState(""),
     [module, setModule] = useState(""),
@@ -36,6 +39,13 @@ export default function Reports() {
               c.rawData.series?.find((x) => x.id === s.seriesId)
                 ?.programmeId === programme),
         );
+      if (kind === "Location utilisation") {
+        const usage = locationUsage(c.rawData, all, {
+          start: from, end: until, campus: c.campus, academicYearId: c.academicYearId,
+          roomId: room, weekdaysOnly,
+        });
+        return { sessions, rows: usageExport(usage.rows) as Record<string, unknown>[], usage, error: "" };
+      }
       let rows: Record<string, unknown>[] = timetableRows(sessions);
       if (kind === "Conflicts") {
         const ids = new Set(sessions.map((s) => s.id));
@@ -45,10 +55,10 @@ export default function Reports() {
       }
       if (kind === "Changes")
         rows = (c.rawData.variants || []).filter(
-          (v) => !v.archived && sessions.some((s) => s.seriesId === v.seriesId),
+          (v) => !v.archived && sessions.some((s) => s.variantId === v.id),
         );
       if (kind === "Capacity")
-        rows = sessions.map((s) => ({
+        rows = sessions.filter(s => s.status !== "Cancelled").map((s) => ({
           Date: s.date,
           Module: s.moduleName,
           Campus: s.campus,
@@ -85,9 +95,9 @@ export default function Reports() {
             (c.campus === "All campuses" || t.campus === c.campus),
         );
       if (kind === "Publications") rows = c.rawData.publications || [];
-      return { sessions, rows, error: "" };
+      return { sessions, rows, usage: null, error: "" };
     } catch (e) {
-      return { sessions: [], rows: [], error: (e as Error).message };
+      return { sessions: [], rows: [], usage: null, error: (e as Error).message };
     }
   }, [
     c.rawData,
@@ -101,6 +111,7 @@ export default function Reports() {
     module,
     room,
     programme,
+    weekdaysOnly,
   ]);
   const select = (
     label: string,
@@ -126,7 +137,7 @@ export default function Reports() {
   return (
     <AppShell
       title="Reports"
-      subtitle="Export dated teaching, capacity, changes and workload"
+      subtitle="Explore location utilisation, teaching, capacity, changes and workload"
     >
       <div className="enterprise-card p-5">
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -137,6 +148,7 @@ export default function Reports() {
               onChange={(e) => setKind(e.target.value)}
             >
               {[
+                "Location utilisation",
                 "Timetable",
                 "Conflicts",
                 "Changes",
@@ -165,6 +177,7 @@ export default function Reports() {
               onChange={(e) => setEnd(e.target.value)}
             />
           </Field>
+          {kind !== "Location utilisation" && <>
           {select(
             "Programme",
             programme,
@@ -184,11 +197,13 @@ export default function Reports() {
             c.rawData.lecturers.map((l) => ({ id: l.id!, name: l.name })),
           )}
           {select("Student", student, setStudent, c.rawData.students || [])}
+          </>}
+          {kind === "Location utilisation" && <Field label="Days included"><select className="input" value={weekdaysOnly ? "weekdays" : "all"} onChange={e => setWeekdaysOnly(e.target.value === "weekdays")}><option value="all">Monday–Sunday</option><option value="weekdays">Monday–Friday</option></select></Field>}
           {select(
             "Location",
             room,
             setRoom,
-            c.rawData.rooms.map((r) => ({ id: r.id!, name: r.room })),
+            c.rawData.rooms.filter(r => !r.archived).map((r) => ({ id: r.id!, name: r.room + " · " + r.campus })),
           )}
         </div>
         <div className="mt-5 flex flex-wrap gap-2">
@@ -233,6 +248,7 @@ export default function Reports() {
         </div>
         <FormError message={result.error} />
       </div>
+      {kind === "Location utilisation" && result.usage && <LocationUsageReport result={result.usage}/>}
       <div className="enterprise-card mt-5 overflow-hidden">
         <p className="p-4 text-sm text-slate-500">
           {result.rows.length} rows · Preview shows the first 100
